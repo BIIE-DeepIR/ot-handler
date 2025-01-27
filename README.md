@@ -1,15 +1,13 @@
 # Liquid Handling Automation with Opentrons
 
-This project provides a comprehensive solution for automating liquid handling tasks using the Opentrons OT-2 robot. It includes a `LiquidHandler` class for managing labware, pipettes, and modules, as well as a suite of tests to ensure reliable operation.
+This project, OT Handler, provides a comprehensive solution for automating liquid handling tasks and more using the Opentrons OT-2 robot. It includes a `LiquidHandler` class for managing labware, pipettes, and modules, as well as a suite of tests to ensure reliable operation.
 
 Before getting started with the liquid handler programming, it's worth reading the list of counter-intuitive quirks to be aware of when working with OpenTrons OT-2: [liquid_handling_quirks.md](./liquid_handling_quirks.md)
 
-## TODO:
-- It seems there's two aspirations of air (at two heights) before aspirating the liquid
-- force blow out if air gap was added 
-- Determine a way to set the offset for liquid handling functions (either by moving wells or by providing a source and destination offset)
-- If the volume is within range for both pipettes, choose the larger one (e.g. 20ul in distributing ethanol wash in the magnetic bead purification)
+## TODO
 
+- It seems there's two aspirations of air (at two heights) before aspirating the liquid
+- Determine a way to set the offset for liquid handling functions (either by moving wells or by providing a source and destination offset)
 
 ## Features
 
@@ -23,39 +21,28 @@ Before getting started with the liquid handler programming, it's worth reading t
 ### Prerequisites
 
 - **Opentrons App**: Ensure you have the latest version of the Opentrons app installed.
+- **Submodule Setup**: We assume you are hosting your own github repository for the liquid handling workflow, and would like to include the OT Handler as a submodule to be able to edit both repositories while maintaining the dependency.
 
 ### Installation
 
-1. **Clone the Repository**:
+1. **Add OT Handler as a Submodule**:
 
     ```bash
-    git clone git@github.com:BIIE-DeepIR/opentrons_workflows.git
-    cd opentrons_workflows
+    git submodule add git@github.com:BIIE-DeepIR/ot-handler.git ./ot_handler
     ```
 
-2. **Set Up Virtual Environment**:
+2. **Install Dependencies**:
 
     ```bash
-    python -m venv .venv
-    source .venv/bin/activate
-    ```
-
-3. **Install Dependencies**:
-
-    ```bash
-    pip install -r requirements.txt
+    pip install -r ot_handler/requirements.txt
     ```
 
 ## Usage
 
-It's advised to create a Jupyter notebook for each protocol formatted as `protocol_<protocol name>.ipynb` and sectioning your commands into cells, so you can recover from potential mistakes. You can upload the protocol on the robot by running the `move_content_to_ot2.py` file or double clicking the shortcut on the desktop.
-
-You can run protocols by accessing the Jupyter web server running on the robot at the address: `http://169.254.32.33:48888/notebooks/biie_workflows/` where you might have to use the currently allocated IP address, which you can find in the OpenTrons app (robot settings / Networking).
-
 ### Using the LiquidHandler class to distribute liquid
 
 ```python
-from liquid_handler import LiquidHandler
+from ot_handler.liquid_handler import LiquidHandler  # edit path if you cloned the submodule to another path
 
 # Initialize the LiquidHandler in simulation mode
 lh = LiquidHandler(simulation=True)
@@ -113,7 +100,7 @@ lh.shake(
 
 ### Connecting to the OT-2
 
-- **WiFi Connection**: It is generally not recommended to connect the OT-2 to WiFi. If necessary, follow the instructions in [opentrons_connection.md](./opentrons_connection.md).
+- **WiFi Connection**: It is generally not recommended to connect the OT-2 to WiFi in the ETH network. If necessary, follow the instructions in [opentrons_connection.md](./opentrons_connection.md).
 - **SSH Access**: Use SSH to connect to the OT-2 for advanced operations. See [opentrons_connection.md](./opentrons_connection.md) for details.
 
 ### Running Tests
