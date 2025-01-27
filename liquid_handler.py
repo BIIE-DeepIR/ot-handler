@@ -494,7 +494,7 @@ class LiquidHandler:
                 if labware.tip_length > 50:
                     self.p300_tips.append(labware)
                     if self.p300_multi is not None and not self.single_tip_mode:
-                        self.p300_multi.tip_racks = self.single_p20_tips
+                        self.p300_multi.tip_racks = self.p300_tips
                 else:
                     self.p20_tips.append(labware)
                     raise NotImplementedError("Multichannel p20 pipette is not yet supported.")

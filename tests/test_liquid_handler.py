@@ -1,18 +1,21 @@
+import json
 import time
 import unittest
+import logging
 import math
 import random
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, mock_open
 from ..liquid_handler import LiquidHandler
 from opentrons.protocol_api import Labware, Well
+from opentrons.protocol_api.labware import OutOfTipsError
 
 class TestLiquidHandlerDistribute(unittest.TestCase):
     def setUp(self):
         # Initialize LiquidHandler with simulation mode
         self.lh = LiquidHandler(simulation=True, load_default=False)
         self.lh.p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "7"))
-        self.lh.partial_p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "6"))
-        self.lh.p20_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_20ul', "11"))
+        self.lh.single_p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "6"))
+        self.lh.single_p20_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_20ul', "11"))
         
         # Mock pipettes
         self.lh.p300_multi = MagicMock()
@@ -405,8 +408,8 @@ class TestLiquidHandlerStamp(unittest.TestCase):
         # Initialize LiquidHandler with simulation mode
         self.lh = LiquidHandler(simulation=True, load_default=False)
         self.lh.p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "7"))
-        self.lh.partial_p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "6"))
-        self.lh.p20_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_20ul', "11"))
+        self.lh.single_p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "6"))
+        self.lh.single_p20_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_20ul', "11"))
         
         # Mock pipettes
         self.lh.p300_multi = MagicMock()
@@ -458,8 +461,8 @@ class TestLiquidHandlerAllocate(unittest.TestCase):
         # Initialize LiquidHandler with simulation mode
         self.lh = LiquidHandler(simulation=True, load_default=False)
         self.lh.p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "7"))
-        self.lh.partial_p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "6"))
-        self.lh.p20_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_20ul', "11"))
+        self.lh.single_p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "6"))
+        self.lh.single_p20_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_20ul', "11"))
         
         # Mock pipettes
         self.lh.p300_multi = MagicMock()
@@ -730,8 +733,8 @@ class TestLiquidHandlerPool(unittest.TestCase):
         # Initialize LiquidHandler with simulation mode
         self.lh = LiquidHandler(simulation=True, load_default=False)
         self.lh.p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "7"))
-        self.lh.partial_p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "6"))
-        self.lh.p20_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_20ul', "11"))
+        self.lh.single_p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "6"))
+        self.lh.single_p20_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_20ul', "11"))
         
         # Mock pipettes
         self.lh.p300_multi = MagicMock()
@@ -825,10 +828,6 @@ class TestLiquidHandlerPool(unittest.TestCase):
             self.lh.p300_multi.reset_mock()
             self.lh.p20.reset_mock()
         
-
-
-    # TODO:
-    # - Test pooling to trash
 
     def test_pool_invalid_new_tip(self):
         # Arrange
@@ -934,8 +933,8 @@ class TestLiquidHandlerStamp(unittest.TestCase):
         # Initialize LiquidHandler with simulation mode
         self.lh = LiquidHandler(simulation=True, load_default=False)
         self.lh.p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "7"))
-        self.lh.partial_p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "6"))
-        self.lh.p20_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_20ul', "11"))
+        self.lh.single_p300_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_300ul', "6"))
+        self.lh.single_p20_tips.append(self.lh.protocol_api.load_labware('opentrons_96_tiprack_20ul', "11"))
         
         # Mock pipettes
         self.lh.p300_multi = MagicMock()
@@ -963,8 +962,81 @@ class TestLiquidHandlerStamp(unittest.TestCase):
         
         self.lh.p20.aspirate.assert_not_called()
         self.lh.p20.dispense.assert_not_called()
-        
 
-    # Test for single channel 300 access to bottom row
+
+class TestLoadDefaultLabware(unittest.TestCase):
+    def setUp(self):
+        self.lh = LiquidHandler(simulation=True, load_default=False)
+
+    @patch("builtins.open", create=True)
+    @patch("json.load")
+    def test_load_default_labware_success(self, mock_json_load, mock_open_func):
+        # Mock JSON data to simulate the file content
+        mock_json_data = {
+            "labware": {},
+            "multichannel_tips": {
+                "7": "opentrons_96_tiprack_300ul"
+            },
+            "single_channel_tips": {
+                "6": "opentrons_96_tiprack_300ul",
+                "11": "opentrons_96_tiprack_20ul"
+            },
+            "modules": {
+                "4": "temperature module gen2",
+                "10": "heaterShakerModuleV1",
+                "9": "magnetic module gen2"
+            }
+        }
+
+        # Serialize the mock data as JSON to simulate the file content
+        mock_file_content = json.dumps(mock_json_data)
+
+        mock_open_func.return_value = mock_open(read_data=json.dumps(mock_json_data)).return_value
+        mock_json_load.return_value = mock_json_data
+
+        # Patch both open and json.load
+        
+        with patch("builtins.open", mock_open(read_data=mock_file_content)) as mocked_open, \
+             patch("json.load", return_value=mock_json_data) as mocked_json_load:
+            self.lh.load_labware = unittest.mock.Mock()
+            self.lh.load_tips = unittest.mock.Mock()
+            self.lh.load_module = unittest.mock.Mock()
+
+            self.lh.load_default_labware()
+
+            self.lh.load_labware.assert_not_called()
+
+            self.assertEqual(self.lh.load_tips.call_count, 3)
+            self.lh.load_tips.assert_any_call("opentrons_96_tiprack_300ul", "6", single_channel=True)
+            self.lh.load_tips.assert_any_call("opentrons_96_tiprack_20ul", "11", single_channel=True)
+            self.lh.load_tips.assert_any_call("opentrons_96_tiprack_300ul", "7", single_channel=False)
+
+    @patch("builtins.open", side_effect=FileNotFoundError)
+    def test_load_default_labware_missing_file(self, mock_open_func):
+        with self.assertLogs(level='ERROR') as log:
+            self.lh.load_default_labware()
+        self.assertIn("No default layout file found. No default labware loaded", log.output[0])
+
+    def test_load_tips(self):
+        pcr_plate = self.lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", 9)
+        reservoir = self.lh.load_labware("nest_12_reservoir_15ml", 2)
+        self.lh.p300_multi.dispense = MagicMock()
+        with self.assertRaises(OutOfTipsError) as context:
+            self.lh.transfer(
+                volumes=[50]*96,
+                source_wells=[reservoir.wells()[0]]*96,
+                destination_wells=pcr_plate.wells()
+            )
+        
+        self.lh.load_tips("opentrons_96_tiprack_300ul", 7, single_channel=False)
+        self.lh.load_tips("opentrons_96_tiprack_300ul", 6, single_channel=True)
+        
+        self.lh.transfer(
+            volumes=[50]*96,
+            source_wells=[reservoir.wells()[0]]*96,
+            destination_wells=pcr_plate.wells()
+        )
+        self.assertEqual(self.lh.p300_multi.dispense.call_count, 12)
+
 if __name__ == '__main__':
     unittest.main()
