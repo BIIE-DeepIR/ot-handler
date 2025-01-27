@@ -2,6 +2,7 @@ import opentrons
 import opentrons.simulate
 import opentrons.execute
 from opentrons.protocol_api.labware import Well
+from opentrons.protocol_api.disposal_locations import TrashBin
 from opentrons.protocol_engine.errors import ProtocolCommandFailedError
 from opentrons.protocol_api.core.engine.deck_conflict import PartialTipMovementNotAllowedError
 from threading import Thread
@@ -156,16 +157,23 @@ class LiquidHandler:
         """
 
         def get_column_index(well):
-            return well.well_name[1:]
+            if isinstance(well, Well):
+                return well.well_name[1:]
+            if isinstance(well, TrashBin):
+                return "1"
+
 
         def get_row_index(well):
-            return well.well_name[0]
+            if isinstance(well, Well):
+                return well.well_name[0]
+            if isinstance(well, TrashBin):
+                return "A"
 
         # Check that parameters are compatible with this function
         if not (isinstance(source_wells, list) and isinstance(source_wells[0], Well)):
             raise ValueError("The source_wells must be a list of Well objects")
-        if not (isinstance(destination_wells, list) and isinstance(destination_wells[0], Well)):
-            raise ValueError("The destination_wells must be a list of Well objects")
+        if not (isinstance(destination_wells, list) and (isinstance(destination_wells[0], Well) or isinstance(destination_wells[0], TrashBin))):
+            raise ValueError("The destination_wells must be a list of Well objects or TrashBin objects")
         if not (len(source_wells) == len(destination_wells) == len(volumes)):
             raise ValueError("The number of wells in source and destination must be equal to the number of volumes provided.")
 
@@ -174,15 +182,18 @@ class LiquidHandler:
             if well.parent != source_labware:
                 raise ValueError("The operations to allocate must be between up to two labware.")
 
-        destination_labware = destination_wells[0].parent
-        for well in destination_wells:
-            if well.parent != destination_labware:
-                raise ValueError("The operations to allocate must be between up to two labware.")
+        if isinstance(destination_wells[0], Well):  # Could also be TrashBin
+            destination_labware = destination_wells[0].parent
+            for well in destination_wells:
+                if well.parent != destination_labware:
+                    raise ValueError("The operations to allocate must be between up to two labware.")
 
-        source_well_names = {well.well_name for well in source_wells}
-        destination_well_names = {well.well_name for well in destination_wells}
-        if source_labware == destination_labware and source_well_names.intersection(destination_well_names):
-            raise ValueError("A well cannot be both a source and destination, because this function cannot be used for order-dependent liquid handling operations.")
+            source_well_names = {well.well_name for well in source_wells}
+            destination_well_names = {well.well_name for well in destination_wells}
+            if source_labware == destination_labware and source_well_names.intersection(destination_well_names):
+                raise ValueError("A well cannot be both a source and destination, because this function cannot be used for order-dependent liquid handling operations.")
+        else:
+            destination_labware = destination_wells[0]
 
         # Construct helper dictionaries to assist in well allocation
         pipette = self.p300_multi
@@ -225,7 +236,7 @@ class LiquidHandler:
                                 # Scenario 2: source or destination well can fit all multichannel pipettes
                                 # Find a well that is present at least 8 times
                                 source_well_names = [op[1].well_name for op in matching_volumes]
-                                destination_well_names = [op[2].well_name for op in matching_volumes]
+                                destination_well_names = [op[2].well_name if isinstance(op[2], Well) else "A1" for op in matching_volumes]
                                 source_well_count = {}
                                 destination_well_count = {}
                                 for well_name in source_well_names:
@@ -240,10 +251,13 @@ class LiquidHandler:
                                         source_troughs.append(well)
 
                                 destination_troughs = []
-                                for name, count in destination_well_count.items():
-                                    well = destination_labware.wells(name)[0]
-                                    if count >= 8 and hasattr(well, 'width') and well.width > 70:
-                                        destination_troughs.append(well)
+                                if isinstance(destination_labware, TrashBin):
+                                    destination_troughs.append(destination_labware)
+                                else:
+                                    for name, count in destination_well_count.items():
+                                        well = destination_labware.wells(name)[0]
+                                        if count >= 8 and hasattr(well, 'width') and well.width > 70:
+                                            destination_troughs.append(well)
                                 # Check transfers between troughs and columns
                                 check_set = [
                                     (source_troughs, destination_troughs, 2, 1),
@@ -398,7 +412,6 @@ class LiquidHandler:
             msg = f"Loaded labware {model_string} at position {self.protocol_api.deck[deck_position]} with name '{name}'"
         else:
             msg = f"Loaded labware {model_string} at position {deck_position} with name '{name}'"
-        print(msg)
         logging.info(msg)
         
         return labware     
@@ -544,7 +557,7 @@ class LiquidHandler:
         TODO:
         - Don't stop on error, but keep handling the liquids and return the failed operations
         """
-        print("Transfer called with new tip: ", new_tip)
+        logging.debug(f"Transfer called with new tip: {new_tip}")
         
         volumes = [volumes] * len(source_wells) if isinstance(volumes, float) or isinstance(volumes, int) else volumes
         volumes = volumes if isinstance(volumes, list) and len(volumes) == len(source_wells) else volumes * len(source_wells)
@@ -554,7 +567,7 @@ class LiquidHandler:
 
         # Split the liquid handling operations so that the source wells are within one labware, and destination wells too
         source_labware = {well.parent for well in source_wells}
-        destination_labware = {well.parent for well in destination_wells}
+        destination_labware = {well.parent if isinstance(well, Well) else well for well in destination_wells}
         transfer_params = {
             "new_tip": new_tip,
             "touch_tip": touch_tip,
@@ -584,7 +597,7 @@ class LiquidHandler:
                 # Take a fresh tip only for the first call
                 if transfer_params["new_tip"] == "once" and done:
                     transfer_params["new_tip"] = "never"
-                indexes = [i for i, well in enumerate(destination_wells) if well.parent == labware]
+                indexes = [i for i, well in enumerate(destination_wells) if well.parent == labware or well == labware]
                 failed_operations += self.transfer(
                     [volumes[i] for i in indexes], 
                     [source_wells[i] for i in indexes], 
@@ -846,7 +859,6 @@ class LiquidHandler:
         if blow_out_to is False and new_tip in ["on aspiration", "always"]:
             msg = "blow_out_to should be set to True when new_tip is 'on aspiration' or 'always'. Setting to True."
             logging.warning(msg)
-            print(msg)
             blow_out_to=True
 
         if isinstance(volumes, float) or isinstance(volumes, int):
@@ -893,11 +905,12 @@ class LiquidHandler:
             ValueError: If an invalid value is provided for 'new_tip'.
         """
         # Checking and reformatting parameters
-        if not isinstance(destination_well, Well):
-            if isinstance(destination_well, list) and len(destination_well) >= 1:
-                destination_well = destination_well[0]
-            else:
+        if isinstance(destination_well, list):
+            if len(destination_well) >= 1:
                 raise TypeError(f"The destination well must be a Well object or a list of a single Well, got {type(destination_well)}.")
+            destination_well = destination_well[0]
+        if not isinstance(destination_well, Well) and not isinstance(destination_well, TrashBin):
+            raise TypeError(f"The destination well must be a Well object, TashBin or a list of a single Well, got {type(destination_well)}.")
 
         if isinstance(source_wells, Well):
             source_wells = [source_wells]

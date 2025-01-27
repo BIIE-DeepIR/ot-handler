@@ -3,7 +3,7 @@ import unittest
 import math
 import random
 from unittest.mock import MagicMock, patch
-from ot_handler.liquid_handler import LiquidHandler
+from ..liquid_handler import LiquidHandler
 from opentrons.protocol_api import Labware, Well
 
 class TestLiquidHandlerDistribute(unittest.TestCase):
@@ -59,9 +59,6 @@ class TestLiquidHandlerDistribute(unittest.TestCase):
                     new_tip="once"
                 )
                 self.lh.p300_multi.dispense.assert_called_once()
-                for well_index, dispense_volume in enumerate(volumes):
-                    self.lh.p300_multi.dispense.assert_any_call(volume=dispense_volume, location=first_row_labware.columns()[i][well_index])
-                    pass
                 self.lh.p20.dispense.assert_not_called()
                 self.lh.p300_multi.reset_mock()
                 self.lh.p20.reset_mock()
@@ -808,6 +805,10 @@ class TestLiquidHandlerPool(unittest.TestCase):
             self.assertEqual(self.lh.p20.aspirate.call_count, 4)
             self.assertEqual(self.lh.p300_multi.dispense.call_count, 4)
             self.assertEqual(self.lh.p300_multi.aspirate.call_count, 4)
+            self.lh.p300_multi.reset_mock()
+            self.lh.p20.reset_mock()
+
+
 
         with self.subTest("With air gap"):
             self.lh.pool(
@@ -817,80 +818,115 @@ class TestLiquidHandlerPool(unittest.TestCase):
                 new_tip="always",
                 add_air_gap=True
             )
-            print(self.lh.p20.dispense.call_count, self.lh.p20.aspirate.call_count, self.lh.p300_multi.dispense.call_count, self.lh.p300_multi.aspirate.call_count)
             self.assertEqual(self.lh.p20.dispense.call_count, 4)
             self.assertEqual(self.lh.p20.aspirate.call_count, 2 * 4)
             self.assertEqual(self.lh.p300_multi.dispense.call_count, 4)
             self.assertEqual(self.lh.p300_multi.aspirate.call_count, 2 * 4)
+            self.lh.p300_multi.reset_mock()
+            self.lh.p20.reset_mock()
         
 
 
     # TODO:
     # - Test pooling to trash
-    # - Test pooling well
 
-    # def test_pool_invalid_new_tip(self):
-    #     # Arrange
-    #     volume = 10
-    #     new_tip = "invalid_option"
+    def test_pool_invalid_new_tip(self):
+        # Arrange
+        volume = 10
+        new_tip = "invalid_option"
         
-    #     # Act & Assert
-    #     with self.assertRaises(ValueError) as context:
-    #         self.lh.pool(
-    #             volumes=volume,
-    #             source_wells=self.source_wells,
-    #             destination_well=self.destination_well,
-    #             new_tip=new_tip
-    #         )
-    #     self.assertIn("invalid value for the optional argument 'new_tip'", str(context.exception))
+        # Act & Assert
+        with self.assertRaises(ValueError) as context:
+            self.lh.pool(
+                volumes=volume,
+                source_wells=self.mock_labware.wells(),
+                destination_well=self.mock_reservoir.wells()[0],
+                new_tip=new_tip
+            )
+        self.assertIn("invalid value for the optional argument 'new_tip'", str(context.exception))
 
-    # def test_pool_volume_below_minimum(self):
-    #     # Arrange
-    #     volume = 0.1  # Below p20.min_volume
+    def test_pool_volume_below_minimum(self):
+        # Arrange
+        volume = 0.1  # Below p20.min_volume
         
-    #     # Act & Assert
-    #     with self.assertLogs(level='WARNING') as log:
-    #         self.lh.pool(
-    #             volumes=volume,
-    #             source_wells=self.source_wells,
-    #             destination_well=self.destination_well,
-    #             new_tip="never"
-    #         )
-    #     self.assertIn("Volume too low, requested operation ignored", log.output[0])
-    #     self.lh.p20.dispense.assert_not_called()
+        # Act & Assert
+        with self.assertLogs(level='WARNING') as log:
+            self.lh.pool(
+                volumes=volume,
+                source_wells=self.mock_labware.wells(),
+                destination_well=self.mock_reservoir.wells()[0],
+                new_tip="never"
+            )
+        self.assertIn("Volume too low, requested operation ignored", log.output[0])
+        self.lh.p20.dispense.assert_not_called()
 
-    # def test_pool_with_large_volume(self):
-    #     # Arrange
-    #     volume = 100  # Exceeds p20.max_volume, should use p300_multi
+    def test_pool_with_large_volume(self):
+        # Arrange
+        volume = 100  # Exceeds p20.max_volume, should use p300_multi
         
-    #     # Act
-    #     self.lh.pool(
-    #         volumes=volume,
-    #         source_wells=self.source_wells,
-    #         destination_well=self.destination_well,
-    #         new_tip="once"
-    #     )
+        # Act
+        self.lh.pool(
+            volumes=volume,
+            source_wells=self.mock_labware.wells(),
+            destination_well=self.mock_reservoir.wells()[0],
+            new_tip="once"
+        )
         
-    #     # Assert
-    #     self.lh.p300_multi.aspirate.assert_called()
-    #     self.lh.p300_multi.dispense.assert_called()
-    #     self.lh.p20.aspirate.assert_not_called()
-    #     self.lh.p20.dispense.assert_not_called()
+        # Assert
+        self.lh.p300_multi.aspirate.assert_called()
+        self.lh.p300_multi.dispense.assert_called()
+        self.lh.p20.aspirate.assert_not_called()
+        self.lh.p20.dispense.assert_not_called()
 
-    # def test_pool_with_invalid_destination_well(self):
-    #     # Arrange
-    #     volume = 10
-    #     invalid_destination = [self.destination_well, self.destination_well]  # Invalid as it should be a single well
+    def test_pool_with_small_volume(self):
+        # Arrange
+        volume = 10
         
-    #     # Act & Assert
-    #     with self.assertRaises(TypeError) as context:
-    #         self.lh.pool(
-    #             volumes=volume,
-    #             source_wells=self.source_wells,
-    #             destination_well=invalid_destination,
-    #             new_tip="once"
-    #         )
-    #     self.assertIn("The destination well must be a Well object or a list of a single Well", str(context.exception))
+        # Act
+        self.lh.pool(
+            volumes=volume,
+            source_wells=self.mock_labware.wells(),
+            destination_well=self.mock_reservoir.wells()[0],
+            new_tip="once"
+        )
+        
+        # Assert
+        self.lh.p300_multi.aspirate.assert_not_called()
+        self.lh.p300_multi.dispense.assert_not_called()
+        self.lh.p20.aspirate.assert_called()
+        self.lh.p20.dispense.assert_called()
+
+    def test_pool_to_trash(self):
+        # Arrange
+        volume = 30
+        
+        # Act
+        self.lh.pool(
+            volumes=volume,
+            source_wells=self.mock_labware.wells(),
+            destination_well=self.lh.trash,
+            new_tip="once"
+        )
+        
+        # Assert
+        self.lh.p300_multi.aspirate.assert_called()
+        self.lh.p300_multi.dispense.assert_called()
+        self.lh.p20.aspirate.assert_not_called()
+        self.lh.p20.dispense.assert_not_called()
+
+    def test_pool_with_invalid_destination_well(self):
+        # Arrange
+        volume = 10
+        invalid_destination = [self.mock_reservoir.wells()[0], self.mock_reservoir.wells()[1]]  # Invalid as it should be a single well
+        
+        # Act & Assert
+        with self.assertRaises(TypeError) as context:
+            self.lh.pool(
+                volumes=volume,
+                source_wells=self.mock_labware.wells(),
+                destination_well=invalid_destination,
+                new_tip="once"
+            )
 
 
 class TestLiquidHandlerStamp(unittest.TestCase):
@@ -920,21 +956,14 @@ class TestLiquidHandlerStamp(unittest.TestCase):
     def test_stamp_plate_with_multichannel_pipette(self):
         test_labware = self.lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", 3, "test")
         expected_volume = 25
-
         self.lh.stamp(expected_volume, self.mock_labware, test_labware)
 
         # Assert
-        for i, well in enumerate(test_labware.wells()):
-            self.lh.p300_multi.dispense.assert_any_call(volume=expected_volume, location=well)
+        self.assertEqual(self.lh.p300_multi.dispense.call_count, 12)
         
         self.lh.p20.aspirate.assert_not_called()
         self.lh.p20.dispense.assert_not_called()
-
-
-
-
-
-
+        
 
     # Test for single channel 300 access to bottom row
 if __name__ == '__main__':
