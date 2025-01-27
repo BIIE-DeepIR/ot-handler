@@ -50,29 +50,34 @@ class LiquidHandler:
 
         # default values
         self.p300_tips = []
-        self.partial_p300_tips = []
-        self.p20_tips = []
+        self.single_p300_tips = []
+        self.p20_tips = [] # Not yet supported
+        self.single_p20_tips = []
         self.temperature_timer = None
         self.shaking_timer = None
         self.single_tip_mode = False
+        self.p300_multi = None
+        self.p20 = None
 
         # Default labware
         if load_default:
-            logging.info("Loading default labware")
-
-            self.protocol_api.load_labware(
-                "opentrons_24_tuberack_eppendorf_1.5ml_safelock_snapcap",
-                "1"
-            )
-            self.p300_tips.append(self.protocol_api.load_labware('opentrons_96_tiprack_300ul', "7"))
-            self.partial_p300_tips.append(self.protocol_api.load_labware('opentrons_96_tiprack_300ul', "6"))
-            self.p20_tips.append(self.protocol_api.load_labware('opentrons_96_tiprack_20ul', "11"))
+            self.load_default_labware()
 
         # load fixed hardware
         logging.info("Loading instruments")
         self.trash = self.protocol_api.fixed_trash
+
+        # self.p300 = self.protocol_api.load_instrument('p300_single_gen2', 'right', tip_racks=self.p300_tips)  # Not yet supported
+
         self.p300_multi = self.protocol_api.load_instrument('p300_multi_gen2', 'right', tip_racks=self.p300_tips)
-        self.p20 = self.protocol_api.load_instrument('p20_single_gen2', 'left', tip_racks=self.p20_tips)
+        if len(self.p300_multi.tip_racks) == 0:
+            logging.warning("No tip racks confiugured for the pipette. Use lh.p300_multi.configure_nozzle_layout() to load the tips.")
+
+        self.p20 = self.protocol_api.load_instrument('p20_single_gen2', 'left', tip_racks=self.single_p20_tips)
+        if len(self.p20.tip_racks) == 0:
+            logging.warning("No tip racks confiugured for the pipette. Use lh.p20.configure_nozzle_layout() to load the tips.")
+
+        # self.p20_multi = self.protocol_api.load_instrument('p20_multi_gen2', 'left', tip_racks=self.p20_multi_tips)  # Not yet supported
 
         logging.info("Loading modules")
         self.temperature_module = self.protocol_api.load_module(module_name="temperature module gen2", location="4") # Adapter might need to be loaded separately
@@ -87,17 +92,6 @@ class LiquidHandler:
 
         self.home()
         self.toggle_light(state=True)
-
-    def toggle_light(self, state: bool=True):
-        """
-        Toggles the light of the OT-2 robot based on the provided state.
-
-        Parameters:
-            state (bool): If True, turn on the light; if False, turn off the light.
-        TODO: Does not work
-        """
-        logging.debug(f"Setting OT-2 light to {'on' if state else 'off'}")
-        self.protocol_api.set_rail_lights(state)
 
     def _count_columns(self, plate_object, sample_count: int):
         """
@@ -117,7 +111,7 @@ class LiquidHandler:
             self.p300_multi.configure_nozzle_layout(
                 style=opentrons.protocol_api.SINGLE,
                 start="A1",
-                tip_racks=self.partial_p300_tips
+                tip_racks=self.single_p300_tips
             )
             self.single_tip_mode = True
         elif not state and self.single_tip_mode:
@@ -129,6 +123,46 @@ class LiquidHandler:
             )
             self.single_tip_mode = False
         return self.single_tip_mode
+    
+    def _save_labware_to_default(self, labware, model_string, deck_position, is_single_channel=False):
+        deck_position = str(deck_position)
+        try:
+            with open('default_layout.ot2', 'r') as file:
+                default_layout = json.load(file)
+        except FileNotFoundError:
+            logging.info("The default layout file 'default_layout.ot2' does not exist. Creating an empty file")
+            default_layout = {
+                "labware": {},
+                "multichannel_tips": {},
+                "single_channel_tips": {}
+            }
+
+        for key in default_layout.keys():
+            old = default_layout[key].get(deck_position)
+            if old:
+                del default_layout[key][deck_position]
+                break
+        if not labware.is_tiprack:
+            default_layout["labware"][deck_position] = model_string
+            with open('default_layout.ot2', 'w') as file:
+                json.dump(default_layout, file, indent=4)
+            msg = f"{model_string} is now loaded on position {deck_position} by default."
+            if old != model_string:
+                msg += " This overrides the previous value of {old}."
+            logging.info(msg)
+        else:
+            if is_single_channel:
+                default_layout["single_channel_tips"][deck_position] = model_string
+            else:
+                default_layout["multichannel_tips"][deck_position] = model_string
+
+        with open('default_layout.ot2', 'w') as file:
+            json.dump(default_layout, file, indent=4)
+        msg = f"{model_string} is now loaded on position {deck_position} by default."
+        if old != model_string:
+            msg += " This overrides the previous value of {old}."
+        logging.info(msg)
+
 
     def _allocate_liquid_handling_steps(self, source_wells, destination_wells, volumes):
         """
@@ -336,6 +370,17 @@ class LiquidHandler:
         logging.debug("Homing...")
         self.protocol_api.home()
 
+    def toggle_light(self, state: bool=True):
+        """
+        Toggles the light of the OT-2 robot based on the provided state.
+
+        Parameters:
+            state (bool): If True, turn on the light; if False, turn off the light.
+        TODO: Does not work
+        """
+        logging.debug(f"Setting OT-2 light to {'on' if state else 'off'}")
+        self.protocol_api.set_rail_lights(state)
+
     def sleep(self, duration):
         "Sleep if not in simulation mode"
         if self.simulation_mode:
@@ -343,15 +388,48 @@ class LiquidHandler:
         else:
             time.sleep(duration)
 
+    def remove_default_position(self, deck_position):
+        with open('default_layout.ot2') as f:
+            default_layout = json.load(f)
+        
+        for key, _ in default_layout.items():
+            del default_layout[key][deck_position]
+
+        with open('default_layout.ot2', 'w') as file:
+            json.dump(default_layout, file, indent=4)
+
+    def load_default_labware(self):
+        """
+        Load the default labware configuration from the default_layout.ot2 file.
+        This method reads a JSON dictionary and loads each labware onto the deck.
+        """
+        logging.info("Loading default labware from default_layout.ot2...")
+        try:
+            with open('default_layout.ot2') as f:
+                default_layout = json.load(f)
+
+            for deck_position, model_string in default_layout["labware"].items():
+                self.load_labware(model_string, deck_position)
+
+            for deck_position, model_string in default_layout["multichannel_tips"].items():
+                labware = self.load_tips(model_string, deck_position, single_channel=False)
+
+            for deck_position, model_string in default_layout["single_channel_tips"].items():
+                labware = self.load_tips(model_string, deck_position, single_channel=True)
+
+        except FileNotFoundError:
+            logging.error("No default layout file found. No default labware loaded")        
+
     def load_labware(self, model_string: str, deck_position: int, name: str = "", add_to_default=False):
         """
-        Load a new labware onto the deck at the specified position. If the position contains a module,
-        the labware is loaded on the module.
+        Load a specified labware onto the deck at a given position. If the designated position is occupied by a module,
+        the labware will be loaded onto that module.
 
         Args:
-            deck_position (int): The position on the deck where the labware should be placed.
             model_string (str): The model string of the labware to be loaded.
-            name (str): An optional name for the labware.
+            deck_position (int): The position on the deck where the labware should be placed.
+            name (str): An optional name for the labware. If not provided, the model string will be used as the name.
+            add_to_default (bool): If True, adds the loaded labware to the default layout configuration.
 
         Returns:
             The loaded labware object.
@@ -364,9 +442,7 @@ class LiquidHandler:
         if not name:
             name = model_string
         
-        # Check that name is not already on deck
-        original_name = name
-        suffix = 1
+        deck_position = str(deck_position)
 
         # Check that the deck position is empty
         module = False
@@ -395,7 +471,7 @@ class LiquidHandler:
                 with open(f'labware/{model_string}.json') as labware_file:
                     labware_def = json.load(labware_file)
                 labware = self.protocol_api.load_labware_from_definition(labware_def, deck_position)
-        
+
         # Log the loading of the labware
         if module:
             msg = f"Loaded labware {model_string} at position {self.protocol_api.deck[deck_position]} with name '{name}'"
@@ -403,19 +479,47 @@ class LiquidHandler:
             msg = f"Loaded labware {model_string} at position {deck_position} with name '{name}'"
         logging.info(msg)
 
-        if add_to_default:
-            with open('default_layout.ot2', 'r') as file:
-                default_layout = json.load(file)
-            old = default_layout.get(deck_position)
-            default_layout[deck_position] = model_string
-            with open('default_layout.ot2', 'w') as file:
-                json.dump(default_layout, file, indent=4)
-            msg = f"{model_string} is now loaded on position {deck_position} by default."
-            if old != model_string:
-                msg += " This overrides the previous value of {old}."
-            logging.info(msg)
+        if add_to_default and not labware.is_tiprack:
+            self._save_labware_to_default(labware, model_string, deck_position)
+        return labware
+    
+    def load_tips(self, model_string: str, deck_position: int, single_channel: bool=False, add_to_default: bool=False):
+        """
+        Load tips into the specified deck position, and add them to the corresponding pipettes, if loaded.
+
+        Args:
+            model_string (str): The model string of the tip rack to load.
+            deck_position (int): The position on the deck where the tip rack should be loaded.
+            single_channel (bool): If True, load the tips in partial mode; defaults to False.
+            add_to_default (bool): If True, add the loaded labware to the default layout; defaults to False.
+        """
+
+        labware = self.load_labware(model_string, deck_position, add_to_default=False)
+        if labware.is_tiprack:
+            if single_channel:
+                if labware.tip_length > 50:
+                    self.single_p300_tips.append(labware)
+                else:
+                    self.single_p20_tips.append(labware)
+                    if self.p20 is not None:
+                        self.p20.tip_racks = self.single_p20_tips
+            else:
+                if labware.tip_length > 50:
+                    self.p300_tips.append(labware)
+                    if self.p300_multi is not None and not self.single_tip_mode:
+                        self.p300_multi.tip_racks = self.single_p20_tips
+                else:
+                    self.p20_tips.append(labware)
+                    raise NotImplementedError("Multichannel p20 pipette is not yet supported.")
+            if add_to_default:
+                self._save_labware_to_default(labware, model_string, deck_position, is_single_channel=single_channel)
+
+        else:
+            logging.error("A model string was passed to load_tips, which doesn't correspond to a tip rack. Labware is unloaded.")
+            self.unload_labware(labware)
+            return False
         
-        return labware     
+        return labware
 
     def unload_labware(self, labware):
         self.protocol_api.move_labware(labware=labware, location=self.protocol_api.OFF_DECK, use_gripper=False)
