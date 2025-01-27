@@ -51,7 +51,10 @@ Before getting started with the liquid handler programming, it's worth reading t
 from ot_handler.liquid_handler import LiquidHandler  # edit path if you cloned the submodule to another path
 
 # Initialize the LiquidHandler in simulation mode
-lh = LiquidHandler(simulation=True)
+lh = LiquidHandler(simulation=True, load_default=False)
+
+# Load tips
+lh.load_tips('opentrons_96_tiprack_300ul', "7")
 
 # Load labware
 sample_plate = lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", 5, "sample plate")
@@ -68,6 +71,96 @@ lh.distribute(
 # Drops tips if any left on the pipettes and homes to robot to a safe position
 lh.home()
 ```
+
+### Example: Saving a default layout
+
+You can save your default deck layout to a file called `default_layout.ot2`, which is then loaded whenever `LiquidHandler(load_default=True)` (this is True if not otherwise specified). This way you don't need to load the deck layout on every script, rather, you only load the variable elements.
+
+The easiest way to generate your layout file is by passing `add_to_default=True` to `lh.load_tips`, `lh.load_labware` or `lh.load_module`. This flag saves the default position, so you no longer have to load it. Please note, that any existing item in that deck position will be overwritten by the new object, if there are any conflicts.
+
+```python
+from ot_handler.liquid_handler import LiquidHandler
+
+lh = LiquidHandler(simulation=True, load_default=False)
+lh.load_tips('opentrons_96_tiprack_300ul', "7", add_to_default=True)
+lh.load_tips('opentrons_96_tiprack_300ul', "6", add_to_default=True, single_channel=True)
+lh.load_tips('opentrons_96_tiprack_20ul', "11", add_to_default=True, single_channel=True)
+
+lh.load_module(module_name="temperature module gen2", location="4", add_to_default=True)
+lh.load_module(module_name="heaterShakerModuleV1", location="10", add_to_default=True)
+lh.load_module(module_name="magnetic module gen2", location="9", add_to_default=True)
+```
+
+Here's an example of a `default_layout.ot2`, which is the recommended setup.
+
+```json
+{
+    "labware": {},
+    "multichannel_tips": {
+        "7": "opentrons_96_tiprack_300ul"
+    },
+    "single_channel_tips": {
+        "6": "opentrons_96_tiprack_300ul",
+        "11": "opentrons_96_tiprack_20ul"
+    },
+    "modules": {
+        "4": "temperature module gen2",
+        "10": "heaterShakerModuleV1",
+        "9": "magnetic module gen2"
+    }
+}
+```
+
+### Example: Rapid development
+
+Below we illustrate the advantages of the LiquidHandler class:
+
+```python
+import random
+from ot_handler.liquid_handler import LiquidHandler
+
+lh = LiquidHandler(simulation=True)
+lh.set_temperature(8)
+
+dna_plate = lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", "2")
+reservoir = lh.load_labware("nest_12_reservoir_15ml", "3")
+
+# Adding 25 ul on the first two columns
+volumes = [25] * 16
+
+# Adding 10 ul on the third column
+volumes += [25] * 8
+
+# Adding random volumes on the rest
+volumes += [random.randint(5, 50)] * 8 * 9
+
+# Let's change the well at half point to ensure sufficient volume
+source_wells = [reservoir.wells()[0]] * 48 + [reservoir.wells()[1]] * 48
+
+lh.transfer(
+    volumes,
+    source_wells=source_wells,
+    destination_wells=dna_plate.wells(),
+    new_tip="once"
+)
+
+lh.home()
+```
+
+Without the class, the above would require much more programming, such as:
+
+- Loading pipettes and tip racks
+- Choosing the right pipette for each volume
+- Changing the nozzle layout of the multichannel pipette to single mode and back
+- If the volume exceeds the pipette range, repeating the liquid transfer until the volume is reached
+
+In addition, the following operations would not be available on the native OpenTrons python SDK:
+
+- Aspirating liquid once, and dispensing different volumes to multiple wells
+- As single channel mode of multichannel mode cannot access the bottom well rows in the first three deck slots, the robot would crash
+- Set temperature would be a blocking call
+
+What makes the LiquidHandler particularly powerful is the fact that it optimizes the order of liquid handling operations to be able to cover maximum amount of wells with single aspiration. This effectively reduces time to transfer liquids when contamination is not an issue.
 
 ### Example: Using the Opentrons commands
 

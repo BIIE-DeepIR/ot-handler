@@ -1,7 +1,7 @@
 import opentrons
 import opentrons.simulate
 import opentrons.execute
-from opentrons.protocol_api.labware import Well
+from opentrons.protocol_api.labware import Well, Labware
 from opentrons.protocol_api.disposal_locations import TrashBin
 from opentrons.protocol_engine.errors import ProtocolCommandFailedError
 from opentrons.protocol_api.core.engine.deck_conflict import PartialTipMovementNotAllowedError
@@ -26,18 +26,6 @@ class LiquidHandler:
     def __init__(self, api_version: str = '2.20', load_default: bool = True, simulation: bool = False):
         """
         Initialize the LiquidHandler class.
-
-        Default layout:
-        # Default layout:
-        # - Eppendorf tuberack on slot 1
-        # - P300 tip rack on slot 7
-        # - Partial P300 tip rack on slot 6
-        # - P20 tip rack on slot 11
-        # - Temperature module on slot 4
-        # - Heater-shaker module on slot 10
-        # - Magnetic module on slot 9
-        # - P300 multi-channel pipette on the right mount
-        # - P20 single-channel pipette on the left mount
         """
 
         # initialize protocol API
@@ -58,6 +46,9 @@ class LiquidHandler:
         self.single_tip_mode = False
         self.p300_multi = None
         self.p20 = None
+        self.temperature_module = None
+        self.shaker_module = None
+        self.magnetic_module = None
 
         # Default labware
         if load_default:
@@ -78,11 +69,6 @@ class LiquidHandler:
             logging.warning("No tip racks confiugured for the pipette. Use lh.p20.configure_nozzle_layout() to load the tips.")
 
         # self.p20_multi = self.protocol_api.load_instrument('p20_multi_gen2', 'left', tip_racks=self.p20_multi_tips)  # Not yet supported
-
-        logging.info("Loading modules")
-        self.temperature_module = self.protocol_api.load_module(module_name="temperature module gen2", location="4") # Adapter might need to be loaded separately
-        self.shaker_module = self.protocol_api.load_module(module_name="heaterShakerModuleV1", location="10")
-        self.magnetic_module = self.protocol_api.load_module(module_name="magnetic module gen2", location="9")
 
         logging.info("Closing labware latch")
         try:
@@ -134,7 +120,8 @@ class LiquidHandler:
             default_layout = {
                 "labware": {},
                 "multichannel_tips": {},
-                "single_channel_tips": {}
+                "single_channel_tips": {},
+                "modules": {},
             }
 
         for key in default_layout.keys():
@@ -142,19 +129,16 @@ class LiquidHandler:
             if old:
                 del default_layout[key][deck_position]
                 break
-        if not labware.is_tiprack:
-            default_layout["labware"][deck_position] = model_string
-            with open('default_layout.ot2', 'w') as file:
-                json.dump(default_layout, file, indent=4)
-            msg = f"{model_string} is now loaded on position {deck_position} by default."
-            if old != model_string:
-                msg += " This overrides the previous value of {old}."
-            logging.info(msg)
-        else:
-            if is_single_channel:
-                default_layout["single_channel_tips"][deck_position] = model_string
+        if isinstance(labware, Labware):
+            if not labware.is_tiprack:
+                default_layout["labware"][deck_position] = model_string
             else:
-                default_layout["multichannel_tips"][deck_position] = model_string
+                if is_single_channel:
+                    default_layout["single_channel_tips"][deck_position] = model_string
+                else:
+                    default_layout["multichannel_tips"][deck_position] = model_string
+        else:
+            default_layout["modules"][deck_position] = model_string
 
         with open('default_layout.ot2', 'w') as file:
             json.dump(default_layout, file, indent=4)
@@ -412,10 +396,13 @@ class LiquidHandler:
                 self.load_labware(model_string, deck_position)
 
             for deck_position, model_string in default_layout["multichannel_tips"].items():
-                labware = self.load_tips(model_string, deck_position, single_channel=False)
+                self.load_tips(model_string, deck_position, single_channel=False)
 
             for deck_position, model_string in default_layout["single_channel_tips"].items():
-                labware = self.load_tips(model_string, deck_position, single_channel=True)
+                self.load_tips(model_string, deck_position, single_channel=True)
+
+            for location, model_name in default_layout["modules"].items():
+                self.load_module(model_name, location)
 
         except FileNotFoundError:
             logging.error("No default layout file found. No default labware loaded")        
@@ -445,15 +432,15 @@ class LiquidHandler:
         deck_position = str(deck_position)
 
         # Check that the deck position is empty
-        module = False
+        on_module = False
         if self.protocol_api.deck[deck_position] is not None:
             try:
                 self.protocol_api.deck[deck_position].type
-                module = True
+                on_module = True
             except AttributeError:
                 raise ValueError(f"Deck position {deck_position} is already occupied. Please choose an empty position.")
 
-        if module:
+        if on_module:
             logging.debug("Loading labware on the module")
             try:
                 labware = self.protocol_api.deck[deck_position].load_labware(model_string)
@@ -473,7 +460,7 @@ class LiquidHandler:
                 labware = self.protocol_api.load_labware_from_definition(labware_def, deck_position)
 
         # Log the loading of the labware
-        if module:
+        if on_module:
             msg = f"Loaded labware {model_string} at position {self.protocol_api.deck[deck_position]} with name '{name}'"
         else:
             msg = f"Loaded labware {model_string} at position {deck_position} with name '{name}'"
@@ -490,7 +477,7 @@ class LiquidHandler:
         Args:
             model_string (str): The model string of the tip rack to load.
             deck_position (int): The position on the deck where the tip rack should be loaded.
-            single_channel (bool): If True, load the tips in partial mode; defaults to False.
+            single_channel (bool): If True, load the tips in for single channel mode; defaults to False.
             add_to_default (bool): If True, add the loaded labware to the default layout; defaults to False.
         """
 
@@ -524,6 +511,22 @@ class LiquidHandler:
     def unload_labware(self, labware):
         self.protocol_api.move_labware(labware=labware, location=self.protocol_api.OFF_DECK, use_gripper=False)
 
+    def load_module(self, module_name: str, location: int, add_to_default=False):
+        module = self.protocol_api.load_module(module_name, location)
+        if "temperature" in module_name.lower():
+            self.temperature_module = module
+        elif "magnetic" in module_name.lower():
+            self.magnetic_module = module
+        elif "shaker" in module_name.lower():
+            self.shaker_module = module
+        else:
+            raise ValueError(f"Module name {module_name} is invalid or not yet supported.")
+
+        if add_to_default:
+            self._save_labware_to_default(module, module_name, location)
+        
+        return module
+
     def set_temperature(self, temperature: float, wait: bool = False):
         """
         Set the temperature of the temperature module.
@@ -532,6 +535,8 @@ class LiquidHandler:
             temperature (float): The target temperature to set.
             wait (bool): If True, wait for the temperature to be set before returning. If False, set the temperature in a separate thread.
         """
+        if not self.temperature_module:
+            raise Exception("No temperature module has been loaded on the deck.")
         if wait:
             if self.temperature_timer:
                 if self.temperature_module.target != temperature:
@@ -550,6 +555,8 @@ class LiquidHandler:
         """
         Release the temperature module by deactivating it and joining any active temperature setting thread.
         """
+        if not self.temperature_module:
+            raise Exception("No temperature module has been loaded on the deck.")
         if self.temperature_timer:
             self.temperature_timer.join()  # there seems to be no way to cancel the thread / temperature set
 
@@ -569,6 +576,8 @@ class LiquidHandler:
         - Check that the labware latch is closed. Same for other functions
         - Stop shaking and finish of this command should open the latch
         """
+        if not self.shaker_module:
+            raise Exception("No shaker module has been loaded on the deck.")
         self.start_shaking(speed)
         if duration > 0:
             if wait:
@@ -583,12 +592,16 @@ class LiquidHandler:
         """
         Start shaking the shaker module.
         """
+        if not self.shaker_module:
+            raise Exception("No shaker module has been loaded on the deck.")
         self.shaker_module.set_and_wait_for_shake_speed(speed)
 
     def stop_shaking(self):
         """
         Stop shaking the shaker module.
         """
+        if not self.shaker_module:
+            raise Exception("No shaker module has been loaded on the deck.")
         self.shaker_module.deactivate_shaker()
 
     def drop_tips(self, trash_tips=True):
@@ -1162,10 +1175,14 @@ class LiquidHandler:
 
         Additionally accepts any keyword arguments accepted by the opentrons engage method.
         """
+        if not self.magnetic_module:
+            raise Exception("No magnetic module has been loaded on the deck.")
         self.magnetic_module.engage(height_from_base=height, **kwargs)
 
     def disengage_magnets(self):
         """
         Disengage the magnets of the magnetic module.
         """
+        if not self.magnetic_module:
+            raise Exception("No magnetic module has been loaded on the deck.")
         self.magnetic_module.disengage()

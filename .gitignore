@@ -166,3 +166,4 @@ cython_debug/
 test/
 .DS_Store
 pyrightconfig.json
+*.ot2
