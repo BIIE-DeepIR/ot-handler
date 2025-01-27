@@ -49,7 +49,6 @@ class LiquidHandler:
         self.simulation_mode = simulation
 
         # default values
-        self.labware = {}
         self.p300_tips = []
         self.partial_p300_tips = []
         self.p20_tips = []
@@ -61,7 +60,7 @@ class LiquidHandler:
         if load_default:
             logging.info("Loading default labware")
 
-            self.labware["eppendorf tuberack"] = self.protocol_api.load_labware(
+            self.protocol_api.load_labware(
                 "opentrons_24_tuberack_eppendorf_1.5ml_safelock_snapcap",
                 "1"
             )
@@ -100,15 +99,11 @@ class LiquidHandler:
         logging.debug(f"Setting OT-2 light to {'on' if state else 'off'}")
         self.protocol_api.set_rail_lights(state)
 
-    def _count_columns(self, plate, sample_count: int):
+    def _count_columns(self, plate_object, sample_count: int):
         """
         Count the number of columns to cover all samples. Used for multichannel pipetting.
         """
-        logging.debug(f"Counting columns for {plate} with {sample_count} samples")
-        if isinstance(plate, str):
-            plate_object = self.labware[plate]  
-        else:
-            plate_object = plate
+        logging.debug(f"Counting columns for {plate_object} with {sample_count} samples")
         total_rows = len(plate_object.columns()[0])
         return math.ceil(sample_count / total_rows) * total_rows
 
@@ -348,7 +343,7 @@ class LiquidHandler:
         else:
             time.sleep(duration)
 
-    def load_labware(self, model_string: str, deck_position: int, name: str = ""):
+    def load_labware(self, model_string: str, deck_position: int, name: str = "", add_to_default=False):
         """
         Load a new labware onto the deck at the specified position. If the position contains a module,
         the labware is loaded on the module.
@@ -372,9 +367,6 @@ class LiquidHandler:
         # Check that name is not already on deck
         original_name = name
         suffix = 1
-        while name in self.labware:
-            name = f"{original_name}_{suffix}"
-            suffix += 1
 
         # Check that the deck position is empty
         module = False
@@ -404,24 +396,28 @@ class LiquidHandler:
                     labware_def = json.load(labware_file)
                 labware = self.protocol_api.load_labware_from_definition(labware_def, deck_position)
         
-        # Store the labware in the labware dictionary with its name or model string as the key
-        self.labware[name] = labware
-        
         # Log the loading of the labware
         if module:
             msg = f"Loaded labware {model_string} at position {self.protocol_api.deck[deck_position]} with name '{name}'"
         else:
             msg = f"Loaded labware {model_string} at position {deck_position} with name '{name}'"
         logging.info(msg)
+
+        if add_to_default:
+            with open('default_layout.ot2', 'r') as file:
+                default_layout = json.load(file)
+            old = default_layout.get(deck_position)
+            default_layout[deck_position] = model_string
+            with open('default_layout.ot2', 'w') as file:
+                json.dump(default_layout, file, indent=4)
+            msg = f"{model_string} is now loaded on position {deck_position} by default."
+            if old != model_string:
+                msg += " This overrides the previous value of {old}."
+            logging.info(msg)
         
         return labware     
 
     def unload_labware(self, labware):
-        # TODO: test
-        for key, value in self.labware.items():
-            if value == labware:
-                del self.labware[key]
-                break
         self.protocol_api.move_labware(labware=labware, location=self.protocol_api.OFF_DECK, use_gripper=False)
 
     def set_temperature(self, temperature: float, wait: bool = False):
