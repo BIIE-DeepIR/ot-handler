@@ -530,7 +530,7 @@ class LiquidHandler:
         - destination_wells (list of Well): The wells to which liquid will be dispensed.
         - new_tip (str, optional): Strategy for using tips. Options are "once", "always", "on aspiration", or "never".
         - touch_tip (bool, optional): Whether to touch the tip to the side of the well after aspirating or dispensing.
-        - blow_out_to (bool or str, optional): Whether the remainder of liquid is blown out to "source", "destination" or "trash". False will result in no blow-out.
+        - blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination" or "trash".
         - trash_tips (bool, optional): Whether to discard tips after use.
         - add_air_gap (bool, optional): Whether to add an air gap after aspiration.
         - overhead_liquid (bool, optional): Whether to aspirate extra liquid to ensure complete transfer.
@@ -546,7 +546,11 @@ class LiquidHandler:
         """
         print("Transfer called with new tip: ", new_tip)
         
+        volumes = [volumes] * len(source_wells) if isinstance(volumes, float) or isinstance(volumes, int) else volumes
         volumes = volumes if isinstance(volumes, list) and len(volumes) == len(source_wells) else volumes * len(source_wells)
+
+        # Parameter validation
+        assert blow_out_to in ["source", "destination", "trash"], "The parameter blow_out_to must always be defined and one of source, destination or trash. Blow out happens only if there's air gap or overhead liquid"
 
         # Split the liquid handling operations so that the source wells are within one labware, and destination wells too
         source_labware = {well.parent for well in source_wells}
@@ -690,7 +694,7 @@ class LiquidHandler:
                 for idx, (source, dest, volume) in enumerate(aspiration_set):
                     pipette.dispense(volume, dest, **kwargs)
                 
-                if blow_out_to:
+                if pipette.current_volume:
                     if blow_out_to != "trash" and new_tip in ["always", "on aspiration"]:
                         logging.warning("Blow out to source or destination may result in contamination even when changing tips!")
                     if blow_out_to == "trash":
@@ -745,7 +749,7 @@ class LiquidHandler:
                         **kwargs
                     )
                 pipette.dispense(set_volume, destination_well, **kwargs)
-                if blow_out_to:
+                if pipette.current_volume:
                     if blow_out_to == "trash":
                         pipette.blow_out(self.trash)
                     elif blow_out_to == "source":
