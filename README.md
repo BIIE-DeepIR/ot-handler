@@ -21,7 +21,7 @@ Before getting started with the liquid handler programming, it's worth reading t
 ### Prerequisites
 
 - **Opentrons App**: Ensure you have the latest version of the Opentrons app installed.
-- **Submodule Setup**: We assume you are hosting your own github repository for the liquid handling workflow, and would like to include the OT Handler as a submodule to be able to edit both repositories while maintaining the dependency.
+- **Submodule Setup**: We assume you are hosting your own GitHub repository for the liquid handling workflow and would like to include the OT Handler as a submodule to be able to edit both repositories while maintaining the dependency.
 
 ### Installation
 
@@ -29,6 +29,12 @@ Before getting started with the liquid handler programming, it's worth reading t
 
     ```bash
     git submodule add git@github.com:BIIE-DeepIR/ot-handler.git ./ot_handler
+    ```
+
+    **Note**: To keep the submodule up to date, remember to pull from the submodule repository separately using:
+
+    ```bash
+    git submodule update --remote
     ```
 
 2. **Install Dependencies**:
