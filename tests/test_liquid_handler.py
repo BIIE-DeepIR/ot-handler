@@ -1011,6 +1011,10 @@ class TestLoadDefaultLabware(unittest.TestCase):
             self.lh.load_tips.assert_any_call("opentrons_96_tiprack_20ul", "11", single_channel=True)
             self.lh.load_tips.assert_any_call("opentrons_96_tiprack_300ul", "7", single_channel=False)
 
+            self.lh.load_module.assert_any_call("temperature module gen2", "4")
+            self.lh.load_module.assert_any_call("heaterShakerModuleV1", "10")
+            self.lh.load_module.assert_any_call("magnetic module gen2", "9")
+
     @patch("builtins.open", side_effect=FileNotFoundError)
     def test_load_default_labware_missing_file(self, mock_open_func):
         with self.assertLogs(level='ERROR') as log:
@@ -1037,6 +1041,44 @@ class TestLoadDefaultLabware(unittest.TestCase):
             destination_wells=pcr_plate.wells()
         )
         self.assertEqual(self.lh.p300_multi.dispense.call_count, 12)
+
+
+
+class TestTipManagement(unittest.TestCase):
+    def setUp(self):
+        # Initialize LiquidHandler with simulation mode
+        self.lh = LiquidHandler(simulation=True, load_default=False)
+        
+        # Mock labware
+        self.mock_labware = self.lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", 9, "mock labware")
+        self.mock_reservoir = self.lh.load_labware("nest_12_reservoir_15ml", 2, "mock reservoir source")
+    
+    def test300ulTips(self):
+        self.lh.load_tips("opentrons_96_tiprack_300ul", "7")
+
+        self.lh.distribute(
+            250,
+            self.mock_reservoir["A1"],
+            self.mock_labware.wells(),
+        )
+
+        self.lh.distribute(
+            250,
+            self.mock_reservoir["A2"],
+            self.mock_labware.wells(),
+        )
+    
+    def test200ulFilterTips(self):
+        self.lh.load_tips("opentrons_96_filtertiprack_200ul", "7")
+
+        self.lh.distribute(
+            250,
+            self.mock_reservoir["A1"],
+            self.mock_labware.wells(),
+            add_air_gap=False,
+            overhead_liquid=False
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
