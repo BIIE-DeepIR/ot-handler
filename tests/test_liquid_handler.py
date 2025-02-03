@@ -1056,21 +1056,7 @@ class TestTipManagement(unittest.TestCase):
     def test300ulTips(self):
         self.lh.load_tips("opentrons_96_tiprack_300ul", "7")
 
-        self.lh.distribute(
-            250,
-            self.mock_reservoir["A1"],
-            self.mock_labware.wells(),
-        )
-
-        self.lh.distribute(
-            250,
-            self.mock_reservoir["A2"],
-            self.mock_labware.wells(),
-        )
-    
-    def test200ulFilterTips(self):
-        self.lh.load_tips("opentrons_96_filtertiprack_200ul", "7")
-
+        # Within the volume range
         self.lh.distribute(
             250,
             self.mock_reservoir["A1"],
@@ -1078,6 +1064,66 @@ class TestTipManagement(unittest.TestCase):
             add_air_gap=False,
             overhead_liquid=False
         )
+
+        # Exceeds the volume range
+        self.lh.distribute(
+            350,
+            self.mock_reservoir["A2"],
+            self.mock_labware.wells(),
+            add_air_gap=False,
+            overhead_liquid=False
+        )
+    
+    def test200ulFilterTips(self):
+        self.lh.load_tips("opentrons_96_filtertiprack_200ul", "7")
+
+        # Within the volume range
+        self.lh.distribute(
+            150,
+            self.mock_reservoir["A1"],
+            self.mock_labware.wells(),
+            add_air_gap=False,
+            overhead_liquid=False
+        )
+
+        # Exceeds the volume range
+        self.lh.distribute(
+            250,
+            self.mock_reservoir["A1"],
+            self.mock_labware.wells(),
+            add_air_gap=False,
+            overhead_liquid=False
+        )
+    
+    def testMaxVolumeSetting(self):
+        self.lh = LiquidHandler(simulation=True, load_default=False, max_volume=150)
+        self.lh.p300_multi = MagicMock()
+        self.lh.load_tips("opentrons_96_filtertiprack_200ul", "7")
+
+        # Within the volume range
+        self.lh.transfer(
+            150,
+            [self.mock_reservoir["A1"]],
+            self.mock_labware.columns()[0],
+            add_air_gap=False,
+            overhead_liquid=False
+        )
+
+        self.assertEqual(self.lh.p300_multi.dispense.call_count, 1)
+        self.lh.p300_multi.reset_mock()
+
+        # Within the volume range
+        self.lh.transfer(
+            200,
+            [self.mock_reservoir["A1"]],
+            self.mock_labware.columns()[0],
+            add_air_gap=False,
+            overhead_liquid=False
+        )
+
+        self.assertEqual(self.lh.p300_multi.dispense.call_count, 2)
+
+
 
 
 if __name__ == '__main__':

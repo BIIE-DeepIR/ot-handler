@@ -23,7 +23,7 @@ logging.basicConfig(
 
 class LiquidHandler:
     
-    def __init__(self, api_version: str = '2.20', load_default: bool = True, simulation: bool = False):
+    def __init__(self, api_version: str = '2.20', load_default: bool = True, simulation: bool = False, max_volume=None):
         """
         Initialize the LiquidHandler class.
         """
@@ -67,6 +67,8 @@ class LiquidHandler:
         self.p20 = self.protocol_api.load_instrument('p20_single_gen2', 'left', tip_racks=self.single_p20_tips)
         if len(self.p20.tip_racks) == 0:
             logging.warning("No tip racks confiugured for the pipette. Use lh.p20.configure_nozzle_layout() to load the tips.")
+        
+        self.max_volume = max_volume if max_volume else self.p300_multi.max_volume
 
         # self.p20_multi = self.protocol_api.load_instrument('p20_multi_gen2', 'left', tip_racks=self.p20_multi_tips)  # Not yet supported
 
@@ -498,6 +500,9 @@ class LiquidHandler:
                 else:
                     self.p20_tips.append(labware)
                     raise NotImplementedError("Multichannel p20 pipette is not yet supported.")
+            if "200ul" in model_string and self.max_volume > 200:
+                logging.info(f"Limiting the maximum transfer volume from {self.max_volume} to 200ul due to tip size limit.")
+                self.max_volume = 200
             if add_to_default:
                 self._save_labware_to_default(labware, model_string, deck_position, is_single_channel=single_channel)
 
@@ -738,6 +743,7 @@ class LiquidHandler:
         # When possible, group the operations for multi-dispense and multi-aspiration
         allocated_indexes = []
         for pipette, single_tip_mode, steps in allocated_sets:
+            max_vol = min(self.max_volume, pipette.max_volume)
             unique_source_wells = {op[1] for op in steps}
             unique_destination_wells = {op[2] for op in steps}
             # Scenario 1: shared source, possibly different destination
@@ -756,7 +762,7 @@ class LiquidHandler:
                             failed_operations.append([source, destination, volume])
                             continue
                         # No multi-dispense if tip change is set as "always", no-multi aspiration if if tip change set as "always" or "on aspiration"
-                        if set_volume + volume < pipette.max_volume and new_tip != "always" and ((p_idx==1 and mix_after is False) or (p_idx==2 and new_tip != "on aspiration")):
+                        if set_volume + volume < max_vol and new_tip != "always" and ((p_idx==1 and mix_after is False) or (p_idx==2 and new_tip != "on aspiration")):
                             current_set.append([source, destination, volume])
                             set_volume += volume
                             allocated_indexes.append(idx)
@@ -764,8 +770,8 @@ class LiquidHandler:
                             if current_set:
                                 grouped_sets[p_idx].append(current_set)
                                 current_set = []
-                            if volume > pipette.max_volume:
-                                sets = math.ceil(volume / pipette.max_volume)
+                            if volume > max_vol:
+                                sets = math.ceil(volume / max_vol)
                                 set_volume = volume / sets
                                 for i in range(sets):
                                     grouped_sets[p_idx].append([[source, destination, set_volume]])
@@ -790,8 +796,8 @@ class LiquidHandler:
                 # [[[source, dest, vol], [source, dest, vol]],[[source, dest2, vol2], [source, dest2, vol2]],...]
                 source_well = aspiration_set[0][0]
                 set_volume = sum([op[2] for op in aspiration_set])
-                extra_volume = min(pipette.min_volume, max(0, pipette.max_volume - set_volume)) if overhead_liquid else 0
-                air_gap = min(pipette.min_volume * 2, 20, max(0, pipette.max_volume - set_volume - extra_volume)) if add_air_gap else 0
+                extra_volume = min(pipette.min_volume, max(0, max_vol - set_volume)) if overhead_liquid else 0
+                air_gap = min(pipette.min_volume * 2, 20, max(0, max_vol - set_volume - extra_volume)) if add_air_gap else 0
                 match new_tip:
                     case "always" | "on aspiration":
                         if pipette.has_tip:
@@ -834,8 +840,8 @@ class LiquidHandler:
                 if mix_after:
                     # Do not mix if there's liquid left it the pipette
                     if len(aspiration_set) == 1:
-                        if mix_after[1] > pipette.max_volume or mix_after[1] < pipette.min_volume:
-                            logging.warning(f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette volume range ({pipette.min_volume} ul - {pipette.max_volume} ul)")
+                        if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
+                            logging.warning(f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)")
                         else:
                             pipette.mix(repetitions=mix_after[0], volume=mix_after[1], location=dest)
                     else:
@@ -845,7 +851,7 @@ class LiquidHandler:
             for dispense_set in dispense_sets:
                 destination_well = dispense_set[0][1]
                 set_volume = sum([op[2] for op in dispense_set])
-                air_gap = min(pipette.min_volume * 2, pipette.max_volume - set_volume - extra_volume) if add_air_gap else 0
+                air_gap = min(pipette.min_volume * 2, max_vol - set_volume - extra_volume) if add_air_gap else 0
 
                 match new_tip:
                     case "always" | "on aspiration":
