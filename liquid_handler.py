@@ -676,9 +676,17 @@ class LiquidHandler:
         - Don't stop on error, but keep handling the liquids and return the failed operations
         """
         logging.debug(f"Transfer called with new tip: {new_tip}")
+
+        operations_length = max(len(source_wells) if isinstance(source_wells, list) else 1, len(destination_wells) if isinstance(destination_wells, list) else 1)
         
-        volumes = [volumes] * len(source_wells) if isinstance(volumes, float) or isinstance(volumes, int) else volumes
-        volumes = volumes if isinstance(volumes, list) and len(volumes) == len(source_wells) else volumes * len(source_wells)
+        volumes = [volumes] * operations_length if isinstance(volumes, float) or isinstance(volumes, int) else volumes
+        volumes = volumes if isinstance(volumes, list) and len(volumes) == operations_length else volumes * len(source_wells)
+        
+        source_wells = source_wells if isinstance(source_wells, list) else [source_wells]
+        source_wells = source_wells if len(source_wells) == operations_length else source_wells * operations_length
+        
+        destination_wells = destination_wells if isinstance(destination_wells, list) else [destination_wells]
+        destination_wells = destination_wells if len(destination_wells) == operations_length else destination_wells * operations_length\
 
         # Parameter validation
         assert blow_out_to in ["source", "destination", "trash"], "The parameter blow_out_to must always be defined and one of source, destination or trash. Blow out happens only if there's air gap or overhead liquid"

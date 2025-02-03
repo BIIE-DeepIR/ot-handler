@@ -1098,6 +1098,8 @@ class TestTipManagement(unittest.TestCase):
     def testMaxVolumeSetting(self):
         self.lh = LiquidHandler(simulation=True, load_default=False, max_volume=150)
         self.lh.p300_multi = MagicMock()
+        self.lh.p300_multi.min_volume = 20
+        self.lh.p300_multi.max_volume = 300
         self.lh.load_tips("opentrons_96_filtertiprack_200ul", "7")
 
         # Within the volume range
