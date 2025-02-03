@@ -22,10 +22,18 @@ logging.basicConfig(
 
 
 class LiquidHandler:
-    
     def __init__(self, api_version: str = '2.20', load_default: bool = True, simulation: bool = False, max_volume=None):
         """
-        Initialize the LiquidHandler class.
+        Initialize a LiquidHandler instance.
+        
+        This constructor sets up the protocol API interface, configures instrument parameters,
+        and loads default labware if specified.
+        
+        Parameters:
+            api_version (str): The protocol API version to use. Defaults to '2.20'.
+            load_default (bool): Whether to load the default labware configuration from the file 'default_layout.ot2'. Defaults to True.
+            simulation (bool): If True, the handler operates in simulation mode. Defaults to False.
+            max_volume: Custom maximum volume setting for pipette transfers in ul. If not provided, defaults to the pipette's inherent max volume.
         """
 
         # initialize protocol API
