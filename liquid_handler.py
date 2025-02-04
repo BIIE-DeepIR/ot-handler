@@ -6,6 +6,7 @@ from opentrons.protocol_api.disposal_locations import TrashBin
 from opentrons.protocol_engine.errors import ProtocolCommandFailedError
 from opentrons.protocol_api.core.engine.deck_conflict import PartialTipMovementNotAllowedError
 from threading import Thread
+import os
 import time
 import math
 import logging
@@ -125,10 +126,17 @@ class LiquidHandler:
     def _save_labware_to_default(self, labware, model_string, deck_position, is_single_channel=False):
         deck_position = str(deck_position)
         try:
-            with open('default_layout.ot2', 'r') as file:
-                default_layout = json.load(file)
+            default_file = 'default_layout.ot2'
+            if not os.path.isfile(default_file):
+                for root, dirs, files in os.walk(os.getcwd()):
+                    if default_file in files:
+                        default_file = os.path.join(root, default_file)
+                        break
+            with open(default_file) as f:
+                default_layout = json.load(f)
         except FileNotFoundError:
-            logging.info("The default layout file 'default_layout.ot2' does not exist. Creating an empty file")
+            default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
+            logging.warning(f"The default layout file 'default_layout.ot2' does not exist. Creating an empty file at: {default_file}")
             default_layout = {
                 "labware": {},
                 "multichannel_tips": {},
@@ -152,7 +160,7 @@ class LiquidHandler:
         else:
             default_layout["modules"][deck_position] = model_string
 
-        with open('default_layout.ot2', 'w') as file:
+        with open(default_file, 'w') as file:
             json.dump(default_layout, file, indent=4)
         msg = f"{model_string} is now loaded on position {deck_position} by default."
         if old != model_string:
@@ -401,7 +409,13 @@ class LiquidHandler:
         """
         logging.info("Loading default labware from default_layout.ot2...")
         try:
-            with open('default_layout.ot2') as f:
+            default_file = 'default_layout.ot2'
+            if not os.path.isfile(default_file):
+                for root, dirs, files in os.walk(os.getcwd()):
+                    if default_file in files:
+                        default_file = os.path.join(root, default_file)
+                        break
+            with open(default_file) as f:
                 default_layout = json.load(f)
 
             for deck_position, model_string in default_layout["labware"].items():
