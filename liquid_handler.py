@@ -823,7 +823,10 @@ class LiquidHandler:
                 self._set_single_tip_mode(True)
 
             # Actual liquid handling
+            
             # Single aspirate, multi-dispense
+            # Sort the dispense operations based on the destination well name
+            aspiration_sets = sorted([sorted(a_set, key=lambda x: str(x[1])) for a_set in aspiration_sets], key=lambda x: str(x[0][1]))
             for aspiration_set in aspiration_sets:
                 # [[[source, dest, vol], [source, dest, vol]],[[source, dest2, vol2], [source, dest2, vol2]],...]
                 source_well = aspiration_set[0][0]
@@ -880,7 +883,10 @@ class LiquidHandler:
                         logging.warning("Mixing ignored: trying to mix several wells during multi-dispense, which is not allowed.")
             
             # Multi-aspirate single dispense
+            # Sort the dispense operations based on the source well name
+            dispense_sets = sorted([sorted(d_set, key=lambda x: str(x[0])) for d_set in dispense_sets], key=lambda x: str(x[0][0]))
             for dispense_set in dispense_sets:
+                # [[[source1, dest, vol1], [source2, dest, vol2]],[[source3, dest, vol3], [source4, dest, vol4]],...]
                 destination_well = dispense_set[0][1]
                 set_volume = sum([op[2] for op in dispense_set])
                 air_gap = min(pipette.min_volume * 2, max_vol - set_volume - extra_volume) if add_air_gap else 0
