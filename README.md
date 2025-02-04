@@ -197,6 +197,11 @@ lh.shake(
 )
 ```
 
+### Accessing the log files
+
+In the same folder where you find `liquid_handler.py` you will also find the .log file, `opentrons.log` which contains information about the last run. If something goes wrong, be sure to preserve this log file for troubleshooting.
+
+
 ### Connecting to the OT-2
 
 - **WiFi Connection**: It is generally not recommended to connect the OT-2 to WiFi in the ETH network. If necessary, follow the instructions in [opentrons_connection.md](./opentrons_connection.md).

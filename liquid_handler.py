@@ -12,10 +12,12 @@ import logging
 import json
 import platform
 
-# Configure logging to display messages in the terminal
+# Determine the directory of the current script and set the log file location accordingly
+log_filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'opentrons.log')
+
 logging.basicConfig(
-    filename='opentrons.log',
-    filemode='w',        # use 'w' for overwrite mode, 'a' to for append mode
+    filename=log_filepath,
+    filemode='w',        # use 'w' for overwrite mode, 'a' for append mode
     format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.DEBUG
 )
