@@ -1,6 +1,6 @@
 # Liquid Handling Automation with Opentrons
 
-This project, OT Handler, provides a comprehensive solution for automating liquid handling tasks and more using the Opentrons OT-2 robot. It includes a `LiquidHandler` class for managing labware, pipettes, and modules, as well as a suite of tests to ensure reliable operation (error handling, managing volumes out of range, optimizing volumes).
+This project, OT Handler, provides a comprehensive solution for automating liquid handling tasks and more using the Opentrons OT-2 robot. It includes a `LiquidHandler` class for managing labware, pipettes, and modules, as well as a suite of tests to ensure reliable operation (error handling, managing volumes out of range, optimizing volumes). Check out the goals and benefits shared in this [presentation](https://drive.google.com/file/d/1lrXMCGwYBwRjmMwhOUil6Nrj9lzpu1pk/view?usp=sharing).
 
 Before getting started with the liquid handler programming, it's worth reading the list of counter-intuitive quirks to be aware of when working with OpenTrons OT-2: [liquid_handling_quirks.md](./liquid_handling_quirks.md)
 
@@ -197,7 +197,6 @@ lh.shake(
 ### Accessing the log files
 
 In the same folder where you find `liquid_handler.py` you will also find the .log file, `opentrons.log` which contains information about the last run. If something goes wrong, be sure to preserve this log file for troubleshooting.
-
 
 ### Connecting to the OT-2
 
