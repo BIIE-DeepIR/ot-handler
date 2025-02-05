@@ -1,13 +1,8 @@
 # Liquid Handling Automation with Opentrons
 
-This project, OT Handler, provides a comprehensive solution for automating liquid handling tasks and more using the Opentrons OT-2 robot. It includes a `LiquidHandler` class for managing labware, pipettes, and modules, as well as a suite of tests to ensure reliable operation.
+This project, OT Handler, provides a comprehensive solution for automating liquid handling tasks and more using the Opentrons OT-2 robot. It includes a `LiquidHandler` class for managing labware, pipettes, and modules, as well as a suite of tests to ensure reliable operation (error handling, managing volumes out of range, optimizing volumes).
 
 Before getting started with the liquid handler programming, it's worth reading the list of counter-intuitive quirks to be aware of when working with OpenTrons OT-2: [liquid_handling_quirks.md](./liquid_handling_quirks.md)
-
-## TODO
-
-- It seems there's two aspirations of air (at two heights) before aspirating the liquid
-- Determine a way to set the offset for liquid handling functions (either by moving wells or by providing a source and destination offset)
 
 ## Features
 
@@ -15,6 +10,8 @@ Before getting started with the liquid handler programming, it's worth reading t
 - **Labware Management**: Load and manage labware on the OT-2 deck.
 - **Module Integration**: Control temperature, shaking, and magnetic modules.
 - **Error Handling**: Robust error handling for common issues like deck conflicts and volume mismatches.
+
+Visit the [issue tracker](https://app.asana.com/0/1209175521795471/1209175611695523) to see the current list of issues and planned features.
 
 ## Setup
 
