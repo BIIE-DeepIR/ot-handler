@@ -783,40 +783,55 @@ class LiquidHandler:
             for pivot_set, p_idx in [[unique_source_wells, 1], [unique_destination_wells, 2]]:
                 for pivot_well in pivot_set:
                     ops = [op for op in steps if op[p_idx] == pivot_well and op[0] not in allocated_indexes]
-                    ops.sort(key=lambda x: x[-1])
-                    current_set = []
-                    set_volume = 0
-                    for idx, source, destination, volume in ops:
-                        if idx in allocated_indexes or volume <= 0:
-                            continue
-                        if volume < pipette.min_volume:
-                            logging.warning("Volume too low, requested operation ignored: dispense {volume} ul to {well} with pipette {pipette}")
-                            failed_operations.append([source, destination, volume])
-                            continue
-                        # No multi-dispense if tip change is set as "always", no-multi aspiration if if tip change set as "always" or "on aspiration"
-                        if set_volume + volume < max_vol and new_tip != "always" and ((p_idx==1 and mix_after is False) or (p_idx==2 and new_tip != "on aspiration")):
-                            current_set.append([source, destination, volume])
-                            set_volume += volume
-                            allocated_indexes.append(idx)
-                        else:
-                            if current_set:
-                                grouped_sets[p_idx].append(current_set)
-                                current_set = []
-                            if volume > max_vol:
-                                sets = math.ceil(volume / max_vol)
-                                set_volume = volume / sets
-                                for i in range(sets):
-                                    grouped_sets[p_idx].append([[source, destination, set_volume]])
-                                allocated_indexes.append(idx)
+                    if len(ops) > 1:
+                        ops.sort(key=lambda x: x[-1])
+                        current_set = []
+                        set_volume = 0
+                        for idx, source, destination, volume in ops:
+                            if idx in allocated_indexes or volume <= 0:
                                 continue
-                            current_set.append([source, destination, volume])
-                            allocated_indexes.append(idx)
-                            set_volume = volume
-                    if current_set:
-                        grouped_sets[p_idx].append(current_set)
+                            if volume < pipette.min_volume:
+                                logging.warning("Volume too low, requested operation ignored: dispense {volume} ul to {well} with pipette {pipette}")
+                                failed_operations.append([source, destination, volume])
+                                continue
+                            # No multi-dispense if tip change is set as "always", no-multi aspiration if if tip change set as "always" or "on aspiration"
+                            if set_volume + volume < max_vol and new_tip != "always" and ((p_idx==1 and mix_after is False) or (p_idx==2 and new_tip != "on aspiration")):
+                                current_set.append([source, destination, volume])
+                                set_volume += volume
+                                allocated_indexes.append(idx)
+                            else:
+                                if current_set:
+                                    grouped_sets[p_idx].append(current_set)
+                                    current_set = []
+                                if volume > max_vol:
+                                    sets = math.ceil(volume / max_vol)
+                                    set_volume = volume / sets
+                                    for i in range(sets):
+                                        grouped_sets[p_idx].append([[source, destination, set_volume]])
+                                    allocated_indexes.append(idx)
+                                    continue
+                                current_set.append([source, destination, volume])
+                                allocated_indexes.append(idx)
+                                set_volume = volume
+                        if current_set:
+                            grouped_sets[p_idx].append(current_set)
             aspiration_sets = grouped_sets[1]
             dispense_sets = grouped_sets[2]
-
+            orphan_operations = []
+            for op in steps:
+                if op[0] not in allocated_indexes:
+                    idx, source, destination, volume = op
+                    if volume > max_vol:
+                        sets = math.ceil(volume / max_vol)
+                        sub_volume = volume / sets
+                        for _ in range(sets):
+                            orphan_operations.append([source, destination, sub_volume])
+                    
+                    elif volume > pipette.min_volume:
+                        orphan_operations.append([source, destination, volume])
+                    else:
+                        logging.warning("Volume too low, requested operation ignored: dispense {volume} ul to {well} with pipette {pipette}")
+                        failed_operations.append([source, destination, volume])
             
             first_round = True
             if single_tip_mode and steps:
@@ -827,6 +842,8 @@ class LiquidHandler:
             # Single aspirate, multi-dispense
             # Sort the dispense operations based on the destination well name
             aspiration_sets = sorted([sorted(a_set, key=lambda x: str(x[1])) for a_set in aspiration_sets], key=lambda x: str(x[0][1]))
+            print("Aspiration set: ", aspiration_sets)
+            # TODO: Evaluate is separate orphan handling is necessary
             for aspiration_set in aspiration_sets:
                 # [[[source, dest, vol], [source, dest, vol]],[[source, dest2, vol2], [source, dest2, vol2]],...]
                 source_well = aspiration_set[0][0]
@@ -868,7 +885,6 @@ class LiquidHandler:
                         pipette.blow_out(source_well.top())
                     elif blow_out_to == "destination":
                         pipette.blow_out(dest.top())
-
                 
                 if mix_after:
                     # Do not mix if there's liquid left it the pipette
@@ -883,11 +899,12 @@ class LiquidHandler:
             # Multi-aspirate single dispense
             # Sort the dispense operations based on the source well name
             dispense_sets = sorted([sorted(d_set, key=lambda x: str(x[0])) for d_set in dispense_sets], key=lambda x: str(x[0][0]))
+            print("Dispense set: ", dispense_sets)
             for dispense_set in dispense_sets:
                 # [[[source1, dest, vol1], [source2, dest, vol2]],[[source3, dest, vol3], [source4, dest, vol4]],...]
                 destination_well = dispense_set[0][1]
                 set_volume = sum([op[2] for op in dispense_set])
-                air_gap = min(pipette.min_volume * 2, max_vol - set_volume - extra_volume) if add_air_gap else 0
+                air_gap = min(pipette.min_volume * 2, max(0, max_vol - set_volume)) if add_air_gap else 0
 
                 match new_tip:
                     case "always" | "on aspiration":
@@ -906,9 +923,9 @@ class LiquidHandler:
                         if not pipette.has_tip:
                             pipette.pick_up_tip() 
                 if air_gap:
-                    pipette.move_to(location=aspiration_set[0][0].top(5))
+                    pipette.move_to(location=dispense_set[0][0].top(5))
                     pipette.air_gap(volume=air_gap)
-                for source, dest, volume in aspiration_set:
+                for source, dest, volume in dispense_set:
                     pipette.aspirate(
                         volume=volume,
                         location=source,
@@ -924,9 +941,62 @@ class LiquidHandler:
                         pipette.blow_out(destination_well.top())
                 
                 if mix_after:
-                    pipette.mix(repetitions=mix_after[0], volume=mix_after[1], location=destination_well)
+                    if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
+                        logging.warning(f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)")
+                    else:
+                        pipette.mix(repetitions=mix_after[0], volume=mix_after[1], location=destination_well)
+            
+            # Simple aspirate and dispense
+            # Sort the dispense operations based on the source well name
+            orphan_operations = sorted(orphan_operations, key=lambda x: str(x[0]))
+            print("Orphan operations: ", orphan_operations)
+            for source_well, destination_well, volume in orphan_operations:
+                extra_volume = min(pipette.min_volume, max(0, max_vol - volume)) if overhead_liquid else 0
+                air_gap = min(pipette.min_volume * 2, 20, max(0, max_vol - volume - extra_volume)) if add_air_gap else 0
 
+                match new_tip:
+                    case "always" | "on aspiration":
+                        if pipette.has_tip:
+                            pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
+                        pipette.pick_up_tip()
+                    case "once":
+                        if first_round:
+                            if pipette.has_tip:
+                                pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
+                            first_round = False
+                        if not pipette.has_tip:
+                            pipette.pick_up_tip()
+                    case _:
+                        # Keep the tips already attached, otherwise pick up fresh ones
+                        if not pipette.has_tip:
+                            pipette.pick_up_tip()
+                if air_gap:
+                    pipette.move_to(location=source_well.top(5))
+                    pipette.air_gap(volume=air_gap)
+                pipette.aspirate(
+                    volume=volume,
+                    location=source_well,
+                    **kwargs
+                )
+                pipette.dispense(volume, destination_well, **kwargs)
 
+                if pipette.current_volume:
+                    if blow_out_to == "trash":
+                        pipette.blow_out(self.trash)
+                    elif blow_out_to == "source":
+                        pipette.blow_out(source_well.top())
+                    elif blow_out_to == "destination":
+                        pipette.blow_out(destination_well.top())
+                    else:
+                        raise Exception("There is leftover volume in the pipette, while blow out is not enabled.")
+                
+                if mix_after:
+                    if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
+                        logging.warning(f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)")
+                    else:
+                        pipette.mix(repetitions=mix_after[0], volume=mix_after[1], location=destination_well)
+
+            # All liquid handling is done
             if single_tip_mode:
                 self._set_single_tip_mode(False)
 

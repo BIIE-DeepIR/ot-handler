@@ -815,8 +815,6 @@ class TestLiquidHandlerPool(unittest.TestCase):
             self.lh.p300_multi.reset_mock()
             self.lh.p20.reset_mock()
 
-
-
         with self.subTest("With air gap"):
             self.lh.pool(
                 volumes=volumes,
@@ -833,6 +831,30 @@ class TestLiquidHandlerPool(unittest.TestCase):
             self.assertEqual(self.lh.p300_multi.air_gap.call_count, 4)
             self.lh.p300_multi.reset_mock()
             self.lh.p20.reset_mock()
+
+    def test_pool_aspirate_multiple(self):
+        # Arrange
+        volumes = [5, 10, 15, 19, 25, 30, 35, 40]
+        
+        # Act & Assert
+        with self.subTest("Without air gap"):
+            self.lh.pool(
+                volumes=volumes,
+                source_wells=self.mock_labware.wells()[:8],
+                destination_well=self.mock_reservoir.wells()[0],
+                new_tip="once",
+                add_air_gap=False
+            )
+            
+            self.assertEqual(self.lh.p20.dispense.call_count, 3)
+            self.assertEqual(self.lh.p20.aspirate.call_count, 4)
+            self.lh.p20.air_gap.assert_not_called()
+            self.lh.p300_multi.air_gap.assert_not_called()
+            self.assertEqual(self.lh.p300_multi.dispense.call_count, 1)
+            self.assertEqual(self.lh.p300_multi.aspirate.call_count, 4)
+            self.lh.p300_multi.reset_mock()
+            self.lh.p20.reset_mock()
+
         
 
     def test_pool_invalid_new_tip(self):
