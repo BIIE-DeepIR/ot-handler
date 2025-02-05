@@ -194,6 +194,163 @@ lh.shake(
 )
 ```
 
+### Comparison of Opentrons and OT Handler
+
+The following scripts accomplishes the same objective: serial dilutions followed by cherry picking, using first the original Opentrons python SDK alone, and then using the OT Handler. The difference between the two is not only in code, but the number of liquid handling operations is lower.
+
+```python
+from liquid_handler import LiquidHandler
+
+lh = LiquidHandler(simulation=True, load_default=True, api_version="2.20")
+
+# Only load labware, the pipettes, tips and modules are saved in the default layout
+labware = lh.load_labware("nuncu_96_wellplate_450ul", 2)
+reservoir = lh.load_labware("nest_12_reservoir_15ml", 3)
+
+# Distribute 40uL from reservoir A1 to the first 16 wells and 10uL for the next 16 of the labware
+lh.distribute(
+    [50] * 8 + [40] * 8 + [10]*16,
+    reservoir["A1"],
+    labware.wells()[:32]
+)
+
+# Add the sample from A2 of the reservoir to the first column
+lh.distribute(
+    10,
+    reservoir["A2"],
+    labware.columns()[0],
+    new_tip="always"
+)
+
+# Serial dilution: 1:5, 1:4, 2:1, 2:1
+for column_index in range(0, 4):
+    lh.transfer(
+        10 if column_index in [0, 1] else 20,
+        labware.columns()[column_index],
+        labware.columns()[column_index + 1],
+        new_tip="always",
+    )
+
+# Cherry pick 25ul from list of wells to reservoir A3
+cherry_pick_wells = ["A3", "B1", "B7", "C5"]
+lh.pool(  # lh.consolidate also exists as an alias for consistency
+    25,
+    [labware[w] for w in cherry_pick_wells],
+    reservoir["A3"]
+)
+
+# This command will additionally ensure pipettes drop tips
+lh.home()
+```
+
+```python
+import json
+import opentrons
+import opentrons.simulate
+
+protocol = opentrons.simulate.get_protocol_api("2.20")
+
+# Load labware
+with open(f'labware/nuncu_96_wellplate_450ul.json') as labware_file:
+    labware_def = json.load(labware_file)
+labware = protocol.load_labware_from_definition(labware_def, 2)
+reservoir = protocol.load_labware("nest_12_reservoir_15ml", 3)
+
+# Load tips
+p300_tips = protocol.load_labware('opentrons_96_tiprack_300ul', '7')
+p20_tips = protocol.load_labware('opentrons_96_tiprack_20ul', '11')
+
+# Load pipette
+p300_multi = protocol.load_instrument('p300_multi', 'right', tip_racks=[p300_tips])
+p20 = protocol.load_instrument('p20_single_gen2', 'left', tip_racks=[p20_tips])
+
+# Distribute 40uL from reservoir A1 to the first 16 wells of the labware
+p300_multi.distribute(
+    [50, 40],
+    reservoir['A1'],
+    [labware["A1"], labware["A2"]],  # Even though destinations are single wells, whole columns are filled
+)
+
+# Distribute remaining 10uL with p20 from reservoir A1 to the next 16 wells of the labware
+p20.distribute(
+    10,
+    reservoir['A1'],
+    labware.wells()[16:32]
+)
+
+# Add the sample from A2 of the reservoir to the first column
+p20.distribute(
+    10,
+    reservoir['A2'],
+    labware.columns()[0],
+    new_tip='always'
+)
+
+# Serial dilution: 1:5, 1:4, 2:1, 2:1
+for column_index in range(0, 4):
+    p20.transfer(
+        10 if column_index in [0, 1] else 20,
+        labware.columns()[column_index],
+        labware.columns()[column_index + 1],
+        new_tip='always'
+    )
+
+# Cherry pick 25ul from list of wells to reservoir A3
+cherry_pick_wells = ["A3", "B1", "B7", "C5"]
+# Problem: too high volume for single channel pipette, the larger pipette is multichannel
+# We have to split volume to multiple rounds or operate the multichannel pipette in a single channel mode. This requires an additional tip rack
+
+if option == "A":
+    
+    # Option A: multiple trips with single channel pipette
+    p20.consolidate(
+        25,
+        [labware[w] for w in cherry_pick_wells],
+        reservoir["A3"]
+    )
+else:
+
+    # Option B: use multichannel pipette in single channel mode
+    single_p300_tips = protocol.load_labware('opentrons_96_tiprack_300ul', '5')
+
+    # Change to single channel mode
+    if p300_multi.has_tip:
+        p300_multi.drop_tip()
+    p300_multi.configure_nozzle_layout(
+        style=opentrons.protocol_api.SINGLE,
+        start="A1",
+        tip_racks=[single_p300_tips]
+    )
+
+    p300_multi.consolidate(
+        25,
+        [labware[w] for w in cherry_pick_wells if w != "B7"],
+        reservoir["A3"]
+    )
+
+    # Handle B7 with p20, as the robot would crash and lose coordinates trying to access it
+    p20.consolidate(
+        25,
+        labware["B7"],
+        reservoir["A3"]
+    )
+
+    # Change back to original mode
+    if p300_multi.has_tip:
+        p300_multi.drop_tip()
+    p300_multi.configure_nozzle_layout(
+        style=opentrons.protocol_api.ALL,
+        tip_racks=[p300_tips]
+    )
+
+# Home the robot
+if p20.has_tip:
+    p20.drop_tip()
+if p300_multi.has_tip:
+    p300_multi.drop_tip()
+protocol.home()
+```
+
 ### Accessing the log files
 
 In the same folder where you find `liquid_handler.py` you will also find the .log file, `opentrons.log` which contains information about the last run. If something goes wrong, be sure to preserve this log file for troubleshooting.
