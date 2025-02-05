@@ -184,9 +184,6 @@ class LiquidHandler:
             ValueError: If the number of source wells, destination wells, and volumes do not match.
             ValueError: If a well is used as both a source and destination.
             ValueError: If operations involve different labware.
-        
-        TODO:
-        - Check: how does trash operate as "column" index?
         """
 
         def get_column_index(well):
@@ -842,8 +839,6 @@ class LiquidHandler:
             # Single aspirate, multi-dispense
             # Sort the dispense operations based on the destination well name
             aspiration_sets = sorted([sorted(a_set, key=lambda x: str(x[1])) for a_set in aspiration_sets], key=lambda x: str(x[0][1]))
-            print("Aspiration set: ", aspiration_sets)
-            # TODO: Evaluate is separate orphan handling is necessary
             for aspiration_set in aspiration_sets:
                 # [[[source, dest, vol], [source, dest, vol]],[[source, dest2, vol2], [source, dest2, vol2]],...]
                 source_well = aspiration_set[0][0]
@@ -899,7 +894,6 @@ class LiquidHandler:
             # Multi-aspirate single dispense
             # Sort the dispense operations based on the source well name
             dispense_sets = sorted([sorted(d_set, key=lambda x: str(x[0])) for d_set in dispense_sets], key=lambda x: str(x[0][0]))
-            print("Dispense set: ", dispense_sets)
             for dispense_set in dispense_sets:
                 # [[[source1, dest, vol1], [source2, dest, vol2]],[[source3, dest, vol3], [source4, dest, vol4]],...]
                 destination_well = dispense_set[0][1]
@@ -949,7 +943,6 @@ class LiquidHandler:
             # Simple aspirate and dispense
             # Sort the dispense operations based on the source well name
             orphan_operations = sorted(orphan_operations, key=lambda x: str(x[0]))
-            print("Orphan operations: ", orphan_operations)
             for source_well, destination_well, volume in orphan_operations:
                 extra_volume = min(pipette.min_volume, max(0, max_vol - volume)) if overhead_liquid else 0
                 air_gap = min(pipette.min_volume * 2, 20, max(0, max_vol - volume - extra_volume)) if add_air_gap else 0
@@ -1056,9 +1049,7 @@ class LiquidHandler:
         TODO:
             - Manage contamination through hover dispense, tip touch and tip handling strategies.
             - Calculate tips in advance, raise error if not enough tips
-            - Source well out of range for multichannel pipette in the single mode
             - Single tip touch before aspiration if reusing tips
-            - Keep using the currently attached tips for the first aspiration (assume clean tips from previous operation)
             - Enable chaching of tips (providing a tip box location where tips are found with the well index)
         
         Nice-to-have:
