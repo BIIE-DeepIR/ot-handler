@@ -25,7 +25,7 @@ logging.basicConfig(
 
 
 class LiquidHandler:
-    def __init__(self, api_version: str = '2.20', load_default: bool = True, simulation: bool = False, max_volume=None):
+    def __init__(self, api_version: str = opentrons.protocol_api.MAX_SUPPORTED_VERSION, load_default: bool = True, simulation: bool = False, max_volume=None):
         """
         Initialize a LiquidHandler instance.
         
@@ -1091,6 +1091,10 @@ class LiquidHandler:
             overhead_liquid=False,
             **kwargs
         )
+    
+    def consolidate(self, *args, **kwargs):
+        # Ensure same naming convention is available
+        return self.pool(*args, **kwargs)
 
     def stamp(
         self,
