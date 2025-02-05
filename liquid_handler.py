@@ -850,10 +850,8 @@ class LiquidHandler:
                         if not pipette.has_tip:
                             pipette.pick_up_tip() 
                 if air_gap:
-                    pipette.aspirate(
-                        volume=air_gap,
-                        location=source_well.top(5)
-                    )
+                    pipette.move_to(location=source_well.top(5))
+                    pipette.air_gap(volume=air_gap)
                 pipette.aspirate(
                     volume=set_volume + extra_volume,
                     location=source_well
@@ -908,10 +906,8 @@ class LiquidHandler:
                         if not pipette.has_tip:
                             pipette.pick_up_tip() 
                 if air_gap:
-                    pipette.aspirate(
-                        volume=air_gap,
-                        location=aspiration_set[0][0].top(5)
-                    )
+                    pipette.move_to(location=aspiration_set[0][0].top(5))
+                    pipette.air_gap(volume=air_gap)
                 for source, dest, volume in aspiration_set:
                     pipette.aspirate(
                         volume=volume,

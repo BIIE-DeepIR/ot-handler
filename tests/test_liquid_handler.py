@@ -786,9 +786,11 @@ class TestLiquidHandlerPool(unittest.TestCase):
         
         # Assert
         self.assertEqual(self.lh.p20.dispense.call_count, 96)
-        self.assertEqual(self.lh.p20.aspirate.call_count, 2*96)
+        self.assertEqual(self.lh.p20.aspirate.call_count, 96)
+        self.assertEqual(self.lh.p20.air_gap.call_count, 96)
         self.lh.p300_multi.aspirate.assert_not_called()
         self.lh.p300_multi.dispense.assert_not_called()
+        self.lh.p300_multi.air_gap.assert_not_called()
 
     def test_pool_multiple_volumes(self):
         # Arrange
@@ -806,6 +808,8 @@ class TestLiquidHandlerPool(unittest.TestCase):
             
             self.assertEqual(self.lh.p20.dispense.call_count, 4)
             self.assertEqual(self.lh.p20.aspirate.call_count, 4)
+            self.lh.p20.air_gap.assert_not_called()
+            self.lh.p300_multi.air_gap.assert_not_called()
             self.assertEqual(self.lh.p300_multi.dispense.call_count, 4)
             self.assertEqual(self.lh.p300_multi.aspirate.call_count, 4)
             self.lh.p300_multi.reset_mock()
@@ -822,9 +826,11 @@ class TestLiquidHandlerPool(unittest.TestCase):
                 add_air_gap=True
             )
             self.assertEqual(self.lh.p20.dispense.call_count, 4)
-            self.assertEqual(self.lh.p20.aspirate.call_count, 2 * 4)
+            self.assertEqual(self.lh.p20.aspirate.call_count, 4)
+            self.assertEqual(self.lh.p20.air_gap.call_count, 4)
             self.assertEqual(self.lh.p300_multi.dispense.call_count, 4)
-            self.assertEqual(self.lh.p300_multi.aspirate.call_count, 2 * 4)
+            self.assertEqual(self.lh.p300_multi.aspirate.call_count, 4)
+            self.assertEqual(self.lh.p300_multi.air_gap.call_count, 4)
             self.lh.p300_multi.reset_mock()
             self.lh.p20.reset_mock()
         
@@ -1124,9 +1130,6 @@ class TestTipManagement(unittest.TestCase):
         )
 
         self.assertEqual(self.lh.p300_multi.dispense.call_count, 2)
-
-
-
 
 if __name__ == '__main__':
     unittest.main()
