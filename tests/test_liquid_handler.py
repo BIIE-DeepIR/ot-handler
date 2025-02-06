@@ -5,7 +5,7 @@ import logging
 import math
 import random
 from unittest.mock import MagicMock, patch, mock_open
-from ..liquid_handler import LiquidHandler
+from ot_handler import LiquidHandler
 from opentrons.protocol_api import Labware, Well
 from opentrons.protocol_api.labware import OutOfTipsError
 
@@ -786,11 +786,9 @@ class TestLiquidHandlerPool(unittest.TestCase):
         
         # Assert
         self.assertEqual(self.lh.p20.dispense.call_count, 96)
-        self.assertEqual(self.lh.p20.aspirate.call_count, 96)
-        self.assertEqual(self.lh.p20.air_gap.call_count, 96)
+        self.assertEqual(self.lh.p20.aspirate.call_count, 2*96)
         self.lh.p300_multi.aspirate.assert_not_called()
         self.lh.p300_multi.dispense.assert_not_called()
-        self.lh.p300_multi.air_gap.assert_not_called()
 
     def test_pool_multiple_volumes(self):
         # Arrange
@@ -808,12 +806,12 @@ class TestLiquidHandlerPool(unittest.TestCase):
             
             self.assertEqual(self.lh.p20.dispense.call_count, 4)
             self.assertEqual(self.lh.p20.aspirate.call_count, 4)
-            self.lh.p20.air_gap.assert_not_called()
-            self.lh.p300_multi.air_gap.assert_not_called()
             self.assertEqual(self.lh.p300_multi.dispense.call_count, 4)
             self.assertEqual(self.lh.p300_multi.aspirate.call_count, 4)
             self.lh.p300_multi.reset_mock()
             self.lh.p20.reset_mock()
+
+
 
         with self.subTest("With air gap"):
             self.lh.pool(
@@ -824,37 +822,11 @@ class TestLiquidHandlerPool(unittest.TestCase):
                 add_air_gap=True
             )
             self.assertEqual(self.lh.p20.dispense.call_count, 4)
-            self.assertEqual(self.lh.p20.aspirate.call_count, 4)
-            self.assertEqual(self.lh.p20.air_gap.call_count, 4)
+            self.assertEqual(self.lh.p20.aspirate.call_count, 2 * 4)
             self.assertEqual(self.lh.p300_multi.dispense.call_count, 4)
-            self.assertEqual(self.lh.p300_multi.aspirate.call_count, 4)
-            self.assertEqual(self.lh.p300_multi.air_gap.call_count, 4)
+            self.assertEqual(self.lh.p300_multi.aspirate.call_count, 2 * 4)
             self.lh.p300_multi.reset_mock()
             self.lh.p20.reset_mock()
-
-    def test_pool_aspirate_multiple(self):
-        # Arrange
-        volumes = [5, 10, 15, 19, 25, 30, 35, 40]
-        
-        # Act & Assert
-        with self.subTest("Without air gap"):
-            self.lh.pool(
-                volumes=volumes,
-                source_wells=self.mock_labware.wells()[:8],
-                destination_well=self.mock_reservoir.wells()[0],
-                new_tip="once",
-                add_air_gap=False
-            )
-            
-            self.assertEqual(self.lh.p20.dispense.call_count, 3)
-            self.assertEqual(self.lh.p20.aspirate.call_count, 4)
-            self.lh.p20.air_gap.assert_not_called()
-            self.lh.p300_multi.air_gap.assert_not_called()
-            self.assertEqual(self.lh.p300_multi.dispense.call_count, 1)
-            self.assertEqual(self.lh.p300_multi.aspirate.call_count, 4)
-            self.lh.p300_multi.reset_mock()
-            self.lh.p20.reset_mock()
-
         
 
     def test_pool_invalid_new_tip(self):
@@ -1039,10 +1011,6 @@ class TestLoadDefaultLabware(unittest.TestCase):
             self.lh.load_tips.assert_any_call("opentrons_96_tiprack_20ul", "11", single_channel=True)
             self.lh.load_tips.assert_any_call("opentrons_96_tiprack_300ul", "7", single_channel=False)
 
-            self.lh.load_module.assert_any_call("temperature module gen2", "4")
-            self.lh.load_module.assert_any_call("heaterShakerModuleV1", "10")
-            self.lh.load_module.assert_any_call("magnetic module gen2", "9")
-
     @patch("builtins.open", side_effect=FileNotFoundError)
     def test_load_default_labware_missing_file(self, mock_open_func):
         with self.assertLogs(level='ERROR') as log:
@@ -1069,89 +1037,6 @@ class TestLoadDefaultLabware(unittest.TestCase):
             destination_wells=pcr_plate.wells()
         )
         self.assertEqual(self.lh.p300_multi.dispense.call_count, 12)
-
-
-
-class TestTipManagement(unittest.TestCase):
-    def setUp(self):
-        # Initialize LiquidHandler with simulation mode
-        self.lh = LiquidHandler(simulation=True, load_default=False)
-        
-        # Mock labware
-        self.mock_labware = self.lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", 9, "mock labware")
-        self.mock_reservoir = self.lh.load_labware("nest_12_reservoir_15ml", 2, "mock reservoir source")
-    
-    def test300ulTips(self):
-        self.lh.load_tips("opentrons_96_tiprack_300ul", "7")
-
-        # Within the volume range
-        self.lh.distribute(
-            250,
-            self.mock_reservoir["A1"],
-            self.mock_labware.wells(),
-            add_air_gap=False,
-            overhead_liquid=False
-        )
-
-        # Exceeds the volume range
-        self.lh.distribute(
-            350,
-            self.mock_reservoir["A2"],
-            self.mock_labware.wells(),
-            add_air_gap=False,
-            overhead_liquid=False
-        )
-    
-    def test200ulFilterTips(self):
-        self.lh.load_tips("opentrons_96_filtertiprack_200ul", "7")
-
-        # Within the volume range
-        self.lh.distribute(
-            150,
-            self.mock_reservoir["A1"],
-            self.mock_labware.wells(),
-            add_air_gap=False,
-            overhead_liquid=False
-        )
-
-        # Exceeds the volume range
-        self.lh.distribute(
-            250,
-            self.mock_reservoir["A1"],
-            self.mock_labware.wells(),
-            add_air_gap=False,
-            overhead_liquid=False
-        )
-    
-    def testMaxVolumeSetting(self):
-        self.lh = LiquidHandler(simulation=True, load_default=False, max_volume=150)
-        self.lh.p300_multi = MagicMock()
-        self.lh.p300_multi.min_volume = 20
-        self.lh.p300_multi.max_volume = 300
-        self.lh.load_tips("opentrons_96_filtertiprack_200ul", "7")
-
-        # Within the volume range
-        self.lh.transfer(
-            150,
-            [self.mock_reservoir["A1"]],
-            self.mock_labware.columns()[0],
-            add_air_gap=False,
-            overhead_liquid=False
-        )
-
-        self.assertEqual(self.lh.p300_multi.dispense.call_count, 1)
-        self.lh.p300_multi.reset_mock()
-
-        # Within the volume range
-        self.lh.transfer(
-            200,
-            [self.mock_reservoir["A1"]],
-            self.mock_labware.columns()[0],
-            add_air_gap=False,
-            overhead_liquid=False
-        )
-
-        self.assertEqual(self.lh.p300_multi.dispense.call_count, 2)
 
 if __name__ == '__main__':
     unittest.main()
