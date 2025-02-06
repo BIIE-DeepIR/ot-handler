@@ -4,6 +4,10 @@ import setuptools
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
+# Read in requirements from requirements.txt
+with open("requirements.txt", "r", encoding="utf-8") as req:
+    requirements = req.read().splitlines()
+
 setuptools.setup(
     name="ot_handler",  
     version="0.1.0",    
@@ -20,4 +24,5 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     python_requires='>=3.10',
+    install_requires=requirements,
 )
