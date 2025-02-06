@@ -22,30 +22,44 @@ Visit the [issue tracker](https://app.asana.com/0/1209175521795471/1209175611695
 
 ### Installation
 
-1. **Add OT Handler as a Submodule**:
+You can install **OT Handler** directly from PyPI using pip:
 
-    ```bash
-    git submodule add git@github.com:BIIE-DeepIR/ot-handler.git ./ot_handler
-    ```
+```bash
+pip install ot_handler
+```
 
-    **Note**: To keep the submodule up to date, remember to pull from the submodule repository separately using:
+If you want to install the latest development version (from the GitHub development branch), you can do so with:
 
-    ```bash
-    git submodule update --remote
-    ```
+```bash
+pip install git+https://github.com/BIIE-DeepIR/ot-handler.git@development
+```
 
-2. **Install Dependencies**:
+Alternatively, if you'd like to work on the codebase locally and contribute to OT Handler, clone the repository, check out the development branch explicitly, and install it in editable mode:
 
-    ```bash
-    pip install -r ot_handler/requirements.txt
-    ```
+```bash
+git clone https://github.com/BIIE-DeepIR/ot-handler.git
+cd ot-handler
+git checkout development
+pip install -e .
+```
+
+Setup and Usage
+
+After installation, you can import and use the LiquidHandler class as shown below:
+
+```python
+from ot_handler import LiquidHandler
+
+# Initialize the LiquidHandler in simulation mode
+lh = LiquidHandler(simulation=True, load_default=False)
+```
 
 ## Usage
 
 ### Using the LiquidHandler class to distribute liquid
 
 ```python
-from ot_handler.liquid_handler import LiquidHandler  # edit path if you cloned the submodule to another path
+from ot_handler import LiquidHandler  # edit path if you cloned the submodule to another path
 
 # Initialize the LiquidHandler in simulation mode
 lh = LiquidHandler(simulation=True, load_default=False)
@@ -76,7 +90,7 @@ You can save your default deck layout to a file called `default_layout.ot2`, whi
 The easiest way to generate your layout file is by passing `add_to_default=True` to `lh.load_tips`, `lh.load_labware` or `lh.load_module`. This flag saves the default position, so you no longer have to load it. Please note, that any existing item in that deck position will be overwritten by the new object, if there are any conflicts.
 
 ```python
-from ot_handler.liquid_handler import LiquidHandler
+from ot_handler import LiquidHandler
 
 lh = LiquidHandler(simulation=True, load_default=False)
 lh.load_tips('opentrons_96_tiprack_300ul', "7", add_to_default=True)
@@ -114,7 +128,7 @@ Below we illustrate the advantages of the LiquidHandler class:
 
 ```python
 import random
-from ot_handler.liquid_handler import LiquidHandler
+from ot_handler import LiquidHandler
 
 lh = LiquidHandler(simulation=True)
 lh.set_temperature(8)
