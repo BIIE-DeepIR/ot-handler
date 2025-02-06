@@ -43,16 +43,11 @@ git checkout development
 pip install -e .
 ```
 
-Setup and Usage
+### Installation directly on OT-2
 
-After installation, you can import and use the LiquidHandler class as shown below:
+In order to install OT Handler on your OT-2, you need to have the OT-2 connected to the wifi, connect to the device over SSH and then follow the installation instructions above. Ideally, you would connect OT-2 to internet only temporarily, unless you have taken the appropriate security measures.
 
-```python
-from ot_handler import LiquidHandler
-
-# Initialize the LiquidHandler in simulation mode
-lh = LiquidHandler(simulation=True, load_default=False)
-```
+More information on how to connect the OT-2 with WiFi and SSH, follow the section "How to connect to the OT2" below.
 
 ## Usage
 
@@ -369,11 +364,6 @@ protocol.home()
 
 In the same folder where you find `liquid_handler.py` you will also find the .log file, `opentrons.log` which contains information about the last run. If something goes wrong, be sure to preserve this log file for troubleshooting.
 
-### Connecting to the OT-2
-
-- **WiFi Connection**: It is generally not recommended to connect the OT-2 to WiFi in the ETH network. If necessary, follow the instructions in [opentrons_connection.md](./opentrons_connection.md).
-- **SSH Access**: Use SSH to connect to the OT-2 for advanced operations. See [opentrons_connection.md](./opentrons_connection.md) for details.
-
 ### Running Tests
 
 The project includes a suite of unit tests to verify the functionality of the `LiquidHandler` class. To run the tests:
@@ -381,3 +371,30 @@ The project includes a suite of unit tests to verify the functionality of the `L
 ``` bash
 python -m unittest discover -s ./tests
 ```
+
+## How to connect to the OT2
+
+### Connecting OT-2 to WiFi
+
+Generally, it is not recommended to connect the OT-2 to WiFi, because other people might accidentally connect to the robot, if there are many of them in the network. You can temporarily connect the robot to WiFi, for example to install a new python package:
+
+1. Open OpenTrons app
+2. Open robot settings
+3. Open "Networking"
+4. Select network SSID, e.g. "eth"
+5. Select "EAP-PEAP with MS-CHAP v2"  (depends on your network configuration)
+6. Provide the username, e.g. [ETH USERNAME]@bsse.ethz.ch
+7. Provide the password
+
+Remember to disconnect the robot from WiFi after by clicking the "Disconnect" button on the OpenTrons app.
+
+### Get the IP address
+
+Turn on the robot, wait until it's ready, open the OpenTrons app and open the robot settings. The IP address is shown under "Networking".
+
+### SSH into the robot
+
+ssh root@<IP ADDRESS, e.g. 169.254.32.33>
+cd /var/lib/jupyter/notebooks/biie_workflows
+
+If this doesn't work, you might need to create an SSH key pair and add the public key to the robot: [Setting up SSH access to your OT-2](https://support.opentrons.com/s/article/Setting-up-SSH-access-to-your-OT-2)
