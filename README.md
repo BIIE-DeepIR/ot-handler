@@ -362,7 +362,7 @@ protocol.home()
 
 ### Accessing the log files
 
-In the same folder where you find `liquid_handler.py` you will also find the .log file, `opentrons.log` which contains information about the last run. If something goes wrong, be sure to preserve this log file for troubleshooting.
+OT Handlre generates `ot_handler.log` logfile which contains information about the last run, and is overwritten every time you run the workflow. If something goes wrong, be sure to preserve this log file for troubleshooting.
 
 ### Running Tests
 

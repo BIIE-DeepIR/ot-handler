@@ -13,8 +13,7 @@ import logging
 import json
 import platform
 
-# Determine the directory of the current script and set the log file location accordingly
-log_filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'opentrons.log')
+log_filepath = 'ot_handler.log'
 
 logging.basicConfig(
     filename=log_filepath,
@@ -126,16 +125,10 @@ class LiquidHandler:
     def _save_labware_to_default(self, labware, model_string, deck_position, is_single_channel=False):
         deck_position = str(deck_position)
         try:
-            default_file = 'default_layout.ot2'
-            if not os.path.isfile(default_file):
-                for root, dirs, files in os.walk(os.getcwd()):
-                    if default_file in files:
-                        default_file = os.path.join(root, default_file)
-                        break
+            default_file = os.path.join(os.getcwd(), 'default_layout.ot2')
             with open(default_file) as f:
                 default_layout = json.load(f)
         except FileNotFoundError:
-            default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
             logging.warning(f"The default layout file 'default_layout.ot2' does not exist. Creating an empty file at: {default_file}")
             default_layout = {
                 "labware": {},
