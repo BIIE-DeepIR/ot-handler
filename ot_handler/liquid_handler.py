@@ -125,7 +125,12 @@ class LiquidHandler:
     def _save_labware_to_default(self, labware, model_string, deck_position, is_single_channel=False):
         deck_position = str(deck_position)
         try:
-            default_file = os.path.join(os.getcwd(), 'default_layout.ot2')
+            default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
+            if not os.path.isfile(default_file):
+                for root, dirs, files in os.walk(os.getcwd()):
+                    if default_file in files:
+                        default_file = os.path.join(root, default_file)
+                        break
             with open(default_file) as f:
                 default_layout = json.load(f)
         except FileNotFoundError:
@@ -383,13 +388,19 @@ class LiquidHandler:
             time.sleep(duration)
 
     def remove_default_position(self, deck_position):
-        with open('default_layout.ot2') as f:
+        default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
+        if not os.path.isfile(default_file):
+            for root, dirs, files in os.walk(os.getcwd()):
+                if default_file in files:
+                    default_file = os.path.join(root, default_file)
+                    break
+        with open(default_file) as f:
             default_layout = json.load(f)
         
         for key, _ in default_layout.items():
             del default_layout[key][deck_position]
 
-        with open('default_layout.ot2', 'w') as file:
+        with open(default_file, 'w') as file:
             json.dump(default_layout, file, indent=4)
 
     def load_default_labware(self):
@@ -399,7 +410,7 @@ class LiquidHandler:
         """
         logging.info("Loading default labware from default_layout.ot2...")
         try:
-            default_file = 'default_layout.ot2'
+            default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
             if not os.path.isfile(default_file):
                 for root, dirs, files in os.walk(os.getcwd()):
                     if default_file in files:
