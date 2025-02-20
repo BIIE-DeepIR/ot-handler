@@ -419,9 +419,6 @@ class LiquidHandler:
             with open(default_file) as f:
                 default_layout = json.load(f)
 
-            for deck_position, model_string in default_layout["labware"].items():
-                self.load_labware(model_string, deck_position)
-
             for deck_position, model_string in default_layout["multichannel_tips"].items():
                 self.load_tips(model_string, deck_position, single_channel=False)
 
@@ -430,6 +427,9 @@ class LiquidHandler:
 
             for location, model_name in default_layout["modules"].items():
                 self.load_module(model_name, location)
+
+            for deck_position, model_string in default_layout["labware"].items():
+                self.load_labware(model_string, deck_position)                
 
         except FileNotFoundError:
             logging.error("No default layout file found. No default labware loaded")        

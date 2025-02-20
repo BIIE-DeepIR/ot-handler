@@ -54,16 +54,12 @@ Perform the operations in the `ot_handler` root folder.
 
 ## 4. Upload to PyPI
 
-- (Optional) First, upload to Test PyPI to ensure everything works:
-
-  ```bash
-  twine upload --repository-url https://test.pypi.org/legacy/ dist/*
-  ```
-
 - Then, upload the final version to the main PyPI repository:
 
   ```bash
   twine upload dist/*
   ```
+  
+  When prompted, paste your API token with the pypi- pefix.
 
 - You will be prompted to enter your PyPI credentials.

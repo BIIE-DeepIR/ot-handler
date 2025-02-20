@@ -13,6 +13,13 @@ Before getting started with the liquid handler programming, it's worth reading t
 
 Visit the [issue tracker](https://app.asana.com/0/1209175521795471/1209175611695523) to see the current list of issues and planned features.
 
+## Version 0.1.1
+
+New changes in this version:
+
+- `opentrons.log` -> `ot_handler.log` and is now located in the working directory
+- `default_layout.ot2` is now located in the working directory
+
 ## Setup
 
 ### Prerequisites
