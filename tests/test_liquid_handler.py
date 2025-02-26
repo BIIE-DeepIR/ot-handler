@@ -5,7 +5,7 @@ import logging
 import math
 import random
 from unittest.mock import MagicMock, patch, mock_open
-from ot_handler import LiquidHandler
+from ot_handler.liquid_handler import LiquidHandler
 from opentrons.protocol_api import Labware, Well
 from opentrons.protocol_api.labware import OutOfTipsError
 
