@@ -71,7 +71,6 @@ class LiquidHandler:
 
         # self.p300 = self.protocol_api.load_instrument('p300_single_gen2', 'right', tip_racks=self.p300_tips)  # Not yet supported
 
-        #self.p300_multi = self.protocol_api.load_instrument('p300_multi_gen2', 'right', tip_racks=self.p300_tips)
         self.p300_multi = init_pipette_for_tracking(self.protocol_api.load_instrument('p300_multi_gen2', 'right', tip_racks=self.p300_tips))
         if len(self.p300_multi.tip_racks) == 0:
             logging.warning("No tip racks confiugured for the pipette. Use lh.p300_multi.configure_nozzle_layout() to load the tips.")
@@ -127,7 +126,12 @@ class LiquidHandler:
     def _save_labware_to_default(self, labware, model_string, deck_position, is_single_channel=False):
         deck_position = str(deck_position)
         try:
-            default_file = os.path.join(os.getcwd(), 'default_layout.ot2')
+            default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
+            if not os.path.isfile(default_file):
+                for root, dirs, files in os.walk(os.getcwd()):
+                    if default_file in files:
+                        default_file = os.path.join(root, default_file)
+                        break
             with open(default_file) as f:
                 default_layout = json.load(f)
         except FileNotFoundError:
@@ -385,13 +389,19 @@ class LiquidHandler:
             time.sleep(duration)
 
     def remove_default_position(self, deck_position):
-        with open('default_layout.ot2') as f:
+        default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
+        if not os.path.isfile(default_file):
+            for root, dirs, files in os.walk(os.getcwd()):
+                if default_file in files:
+                    default_file = os.path.join(root, default_file)
+                    break
+        with open(default_file) as f:
             default_layout = json.load(f)
         
         for key, _ in default_layout.items():
             del default_layout[key][deck_position]
 
-        with open('default_layout.ot2', 'w') as file:
+        with open(default_file, 'w') as file:
             json.dump(default_layout, file, indent=4)
 
     def load_default_labware(self):
@@ -401,7 +411,7 @@ class LiquidHandler:
         """
         logging.info("Loading default labware from default_layout.ot2...")
         try:
-            default_file = 'default_layout.ot2'
+            default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
             if not os.path.isfile(default_file):
                 for root, dirs, files in os.walk(os.getcwd()):
                     if default_file in files:
@@ -859,24 +869,13 @@ class LiquidHandler:
                 if air_gap:
                     pipette.move_to(location=source_well.top(5))
                     pipette.air_gap(volume=air_gap)
-                
-                
                 pipette.aspirate(
                     volume=set_volume + extra_volume,
                     location=source_well,
-                    single_tip_mode=single_tip_mode #################################
+                    single_tip_mode=single_tip_mode
                 )
-                #Update liquid
-                #Single channel / multichannel single tip mode
-                #if (pipette == self.p20_single) or   (pipette == self.p300_multi and single_tip_mode == True):
-                #    try:
-                        
-
-                #Multichannel
-
-                
                 for idx, (source, dest, volume) in enumerate(aspiration_set):
-                    pipette.dispense(volume, dest, single_tip_mode=single_tip_mode, **kwargs) #################################
+                    pipette.dispense(volume, dest, single_tip_mode=single_tip_mode, **kwargs)
                 
                 if pipette.current_volume:
                     if blow_out_to != "trash" and new_tip in ["always", "on aspiration"]:
@@ -930,7 +929,7 @@ class LiquidHandler:
                     pipette.aspirate(
                         volume=volume,
                         location=source,
-                        single_tip_mode=single_tip_mode, #################################
+                        single_tip_mode=single_tip_mode,
                         **kwargs
                     )
                 pipette.dispense(set_volume, destination_well, single_tip_mode=single_tip_mode, **kwargs)
@@ -977,7 +976,7 @@ class LiquidHandler:
                 pipette.aspirate(
                     volume=volume,
                     location=source_well,
-                    single_tip_mode=single_tip_mode, #################################
+                    single_tip_mode=single_tip_mode,
                     **kwargs
                 )
                 pipette.dispense(volume, destination_well, single_tip_mode=single_tip_mode, **kwargs)
