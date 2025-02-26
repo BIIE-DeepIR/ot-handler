@@ -5,7 +5,7 @@ import logging
 import math
 import random
 from unittest.mock import MagicMock, patch, mock_open
-from ot_handler import LiquidHandler
+from ot_handler.liquid_handler import LiquidHandler
 from opentrons.protocol_api import Labware, Well
 from opentrons.protocol_api.labware import OutOfTipsError
 
@@ -188,7 +188,7 @@ class TestLiquidHandlerDistribute(unittest.TestCase):
             overhead_liquid=False
         )
         # Assert
-        self.lh.p300_multi.aspirate.assert_called_with(volume=100, location=self.source_well)
+        self.lh.p300_multi.aspirate.assert_called_with(volume=100, location=self.source_well, single_tip_mode=False)
         self.lh.p300_multi.dispense.assert_called()
         self.lh.p300_multi.blow_out.assert_called()
         
@@ -258,7 +258,7 @@ class TestLiquidHandlerDistribute(unittest.TestCase):
         )
         
         # Assert
-        self.lh.p300_multi.aspirate.assert_called_with(volume=90, location=self.source_well)
+        self.lh.p300_multi.aspirate.assert_called_with(volume=90, location=self.source_well, single_tip_mode=True)
         self.lh.p300_multi.dispense.assert_called()
         
     def test_distribute_single_vs_multiple_aspirations(self):
