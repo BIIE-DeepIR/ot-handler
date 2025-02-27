@@ -10,13 +10,13 @@ def init_pipette_for_tracking(pipette):
     #Check if pipette is already initalized for volume tracking
     if not hasattr(pipette, '_vol_tracking'):
         pipette._vol_tracking = True
-        pipette._aspirate = pipette.aspirate
-        pipette._dispense = pipette.dispense
+        #pipette._aspirate = pipette.aspirate
+        #pipette._dispense = pipette.dispense
 
         #Functions with volume tracking
-        def aspirate(self, volume: Optional[float] = None, location: Optional[Union[Location, TrackedWell]] = None, rate: float = 1.0, single_tip_mode=False) -> InstrumentContext:
+        def aspirate_tracked(self, volume: Optional[float] = None, location: Optional[Union[Location, TrackedWell]] = None, rate: float = 1.0, single_tip_mode=False) -> InstrumentContext:
             """Aspirate liquid from a well, tracking volume if it's a TrackedWell"""
-            self._aspirate(volume, location, rate)
+            self.aspirate(volume, location, rate)
             
             if isinstance(location, TrackedWell):
                 if 'single' in pipette.name:
@@ -40,9 +40,9 @@ def init_pipette_for_tracking(pipette):
                             location.parent.remove_volume(w.well_name, volume)
                                     
         
-        def dispense(self, volume: Optional[float] = None, location: Optional[Union[Location, TrackedWell]] = None, rate: float = 1.0, single_tip_mode=False,) -> InstrumentContext:
+        def dispense_tracked(self, volume: Optional[float] = None, location: Optional[Union[Location, TrackedWell]] = None, rate: float = 1.0, single_tip_mode=False, push_out: Optional[float] = None, ) -> InstrumentContext:
             """Dispense liquid into a well, tracking volume if it's a TrackedWell"""
-            self._dispense(volume, location, rate)
+            self.dispense(volume, location, rate, push_out=push_out)
 
             if isinstance(location, TrackedWell):
                 if 'single' in pipette.name:
@@ -70,8 +70,8 @@ def init_pipette_for_tracking(pipette):
         # Support for transfer and distribute consolidate
                 
     
-        pipette.aspirate = MethodType(aspirate, pipette)
-        pipette.dispense = MethodType(dispense, pipette)
+        pipette.aspirate_tracked = MethodType(aspirate_tracked, pipette)
+        pipette.dispense_tracked = MethodType(dispense_tracked, pipette)
 
     else:
         print("Pipette is already initialised for volume tracking")

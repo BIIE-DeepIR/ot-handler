@@ -869,13 +869,13 @@ class LiquidHandler:
                 if air_gap:
                     pipette.move_to(location=source_well.top(5))
                     pipette.air_gap(volume=air_gap)
-                pipette.aspirate(
+                pipette.aspirate_tracked(
                     volume=set_volume + extra_volume,
                     location=source_well,
                     single_tip_mode=single_tip_mode
                 )
                 for idx, (source, dest, volume) in enumerate(aspiration_set):
-                    pipette.dispense(volume, dest, single_tip_mode=single_tip_mode, **kwargs)
+                    pipette.dispense_tracked(volume, dest, single_tip_mode=single_tip_mode, **kwargs)
                 
                 if pipette.current_volume:
                     if blow_out_to != "trash" and new_tip in ["always", "on aspiration"]:
@@ -926,13 +926,13 @@ class LiquidHandler:
                     pipette.move_to(location=dispense_set[0][0].top(5))
                     pipette.air_gap(volume=air_gap)
                 for source, dest, volume in dispense_set:
-                    pipette.aspirate(
+                    pipette.aspirate_tracked(
                         volume=volume,
                         location=source,
                         single_tip_mode=single_tip_mode,
                         **kwargs
                     )
-                pipette.dispense(set_volume, destination_well, single_tip_mode=single_tip_mode, **kwargs)
+                pipette.dispense_tracked(set_volume, destination_well, single_tip_mode=single_tip_mode, **kwargs)
                 if pipette.current_volume:
                     if blow_out_to == "trash":
                         pipette.blow_out(self.trash)
@@ -973,13 +973,13 @@ class LiquidHandler:
                 if air_gap:
                     pipette.move_to(location=source_well.top(5))
                     pipette.air_gap(volume=air_gap)
-                pipette.aspirate(
+                pipette.aspirate_tracked(
                     volume=volume,
                     location=source_well,
                     single_tip_mode=single_tip_mode,
                     **kwargs
                 )
-                pipette.dispense(volume, destination_well, single_tip_mode=single_tip_mode, **kwargs)
+                pipette.dispense_tracked(volume, destination_well, single_tip_mode=single_tip_mode, **kwargs)
 
                 if pipette.current_volume:
                     if blow_out_to == "trash":
@@ -1299,3 +1299,9 @@ class LiquidHandler:
         if not self.magnetic_module:
             raise Exception("No magnetic module has been loaded on the deck.")
         self.magnetic_module.disengage()
+
+    def deck_layout(self):
+        print("Loaded Labware:")
+        for slot, labware in self.protocol_api.deck.items():
+            if labware:  # Only print occupied slots
+                print(f"Slot {slot}: {labware}")

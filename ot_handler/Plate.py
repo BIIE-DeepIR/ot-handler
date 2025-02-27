@@ -15,7 +15,7 @@ class Plate:
         self.plate_data = {}
         self.well_data = {}
         self.required_keys = {"well_data","plate_data"}
-        self.required_keys_wells = {"well", "name", "volume"}
+        self.required_keys_wells = {"volume"}
         self.required_keys_plate = {'plate_type', 'total_wells', 'max_volume'}
         self.physical_labware = None
         
@@ -132,7 +132,6 @@ class Plate:
             resuspend = {}
             for well, info in self.well_data.items():
                 vol = info["yield"]/final_conc #Maybe round
-                self.well_data[well]["volume"] = vol
                 resuspend[well] = vol
 
             #Give pipetting command for resupension
