@@ -404,14 +404,17 @@ class LiquidHandler:
         with open(default_file, 'w') as file:
             json.dump(default_layout, file, indent=4)
 
-    def load_default_labware(self):
+    def load_default_labware(self, path=None):
         """
         Load the default labware configuration from the default_layout.ot2 file.
         This method reads a JSON dictionary and loads each labware onto the deck.
         """
         logging.info("Loading default labware from default_layout.ot2...")
         try:
-            default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
+            if path:
+                default_file = path
+            else:
+                default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
             if not os.path.isfile(default_file):
                 for root, dirs, files in os.walk(os.getcwd()):
                     if default_file in files:
