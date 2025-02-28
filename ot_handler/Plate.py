@@ -160,9 +160,10 @@ class Plate:
         else:
             resuspend = {}
             for well, info in self.well_data.items():
-                vol = info["yield"]/final_conc #Maybe round
-                self.well_data[well]["conc"] = final_conc
-                resuspend[well] = vol
+                if "yield" in info.keys():
+                    vol = info["yield"]/final_conc #Maybe round
+                    self.well_data[well]["conc"] = final_conc
+                    resuspend[well] = vol
 
             #Give pipetting command for resupension
             return resuspend
