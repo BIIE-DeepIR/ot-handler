@@ -31,33 +31,7 @@ class Plate:
 
         else:
 
-            self.plate_data["plate_type"] = plate_type
-            
-            if self.plate_data["plate_type"] == "96-well":
-                self.plate_data["total_wells"] = 96
-                if not max_vol:
-                    self.plate_data["max_volume"] = 200
-
-            if self.plate_data["plate_type"] == "48-well":
-                self.plate_data["total_wells"] = 48
-                if not max_vol:
-                    self.plate_data["max_volume"] = 400 #To be decided
-
-            if self.plate_data["plate_type"] == "24-well":
-                self.plate_data["total_wells"] = 24
-                if not max_vol:
-                    self.plate_data["max_volume"] = 1000 #To be decided
-
-            if self.plate_data["plate_type"] == "12-well":
-                self.plate_data["total_wells"] = 12
-                if not max_vol:
-                    self.plate_data["max_volume"] = 2000 #To be decided
-
-            if self.plate_data["plate_type"] == "6-well":
-                self.plate_data["total_wells"] = 6
-                if not max_vol:
-                    self.plate_data["max_volume"] = 5000 #To be decided
-
+            self.init_empty_plate(plate_type, max_vol)
 
     
     def load_plate_from_json(self, file_path):
@@ -85,7 +59,62 @@ class Plate:
                 raise ValueError(f"Well '{well}' is missing required keys: {missing_keys}")
 
 
+    def init_empty_plate(self, plate_type, max_vol):
 
+        self.plate_data["plate_type"] = plate_type
+        
+        if plate_type == "96-well":
+            self.plate_data["total_wells"] = 384
+            if not max_vol:
+                self.plate_data["max_volume"] = 200
+            well_names = self.generate_well_names(["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P"], range(1,25))
+        
+        if plate_type == "96-well":
+            self.plate_data["total_wells"] = 96
+            if not max_vol:
+                self.plate_data["max_volume"] = 200
+            well_names = self.generate_well_names(["A", "B", "C", "D", "E", "F", "G", "H"], range(1,13))
+            
+        if plate_type == "48-well":
+            self.plate_data["total_wells"] = 48
+            if not max_vol:
+                self.plate_data["max_volume"] = 400 #To be decided            
+            well_names = self.generate_well_names(["A", "B", "C", "D", "E", "F"], range(1,9))
+
+        if plate_type == "24-well":
+            self.plate_data["total_wells"] = 24
+            if not max_vol:
+                self.plate_data["max_volume"] = 1000 #To be decided          
+            well_names = self.generate_well_names(["A", "B", "C", "D"], range(1,7))
+
+        if plate_type == "12-well":
+            self.plate_data["total_wells"] = 12
+            if not max_vol:
+                self.plate_data["max_volume"] = 2000 #To be decided           
+            well_names = self.generate_well_names(["A", "B", "C"], range(1,5))
+
+        if plate_type == "6-well":
+            self.plate_data["total_wells"] = 6
+            if not max_vol:
+                self.plate_data["max_volume"] = 5000 #To be decided             
+            well_names = self.generate_well_names(["A", "B"], range(1,4))
+
+        # Initalize well data        
+        for well_name in well_names:
+            if well_name not in self.well_data:
+                self.well_data[well_name] = {
+                    "volume": 0,
+                    "name": None,
+                }
+
+
+    def generate_well_names(self, rows, columns):
+        well_names = []
+        for c in columns:
+            for r in rows:
+                well_names.append(r + str(c))
+        return well_names
+            
     def init_from_twist_plate_map(self, file_path):
         """Load well data from a twist plate map."""
         plate_map = pd.read_csv(file_path, index_col="Well Location").to_dict(orient='index')
@@ -132,6 +161,7 @@ class Plate:
             resuspend = {}
             for well, info in self.well_data.items():
                 vol = info["yield"]/final_conc #Maybe round
+                self.well_data[well]["conc"] = final_conc
                 resuspend[well] = vol
 
             #Give pipetting command for resupension
