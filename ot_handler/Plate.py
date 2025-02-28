@@ -224,7 +224,7 @@ class Plate:
         
         # Add wrapped well methods
         self.wells = types.MethodType(wells, self)
-        self.wells_by_name = wells_by_name
+        self.wells_by_name = types.MethodType(wells_by_name, self)
 
 
 
