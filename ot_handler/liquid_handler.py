@@ -229,7 +229,7 @@ class LiquidHandler:
         column_operations = {}
         large_volume_operations = []
         for i, source, dest, vol in zip(range(len(volumes)), source_wells, destination_wells, volumes):
-            if vol > pipette.min_volume:
+            if vol >= pipette.min_volume:
                 op = (i, source, dest, vol)
                 large_volume_operations.append(op)
                 key = (get_column_index(source), get_column_index(dest))
@@ -832,7 +832,7 @@ class LiquidHandler:
                         for _ in range(sets):
                             orphan_operations.append([source, destination, sub_volume])
                     
-                    elif volume > pipette.min_volume:
+                    elif volume >= pipette.min_volume:
                         orphan_operations.append([source, destination, volume])
                     else:
                         logging.warning("Volume too low, requested operation ignored: dispense {volume} ul to {well} with pipette {pipette}")
