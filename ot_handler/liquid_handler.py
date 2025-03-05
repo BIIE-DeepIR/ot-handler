@@ -716,6 +716,24 @@ class LiquidHandler:
         # Parameter validation
         assert blow_out_to in ["source", "destination", "trash"], "The parameter blow_out_to must always be defined and one of source, destination or trash. Blow out happens only if there's air gap or overhead liquid"
 
+        # Check for volumes exceeding pipette max volume, and split those into multiple operations
+        max_volume = self.p300_multi.max_volume
+        new_operations = []
+        for operation in [[v, s, d] for v, s, d in zip(volumes, source_wells, destination_wells)]:
+            volume = operation[0]
+            while volume > max_volume:
+                if volume > max_volume + self.p300_multi.min_volume:
+                    new_operations.append([max_volume, operation[1], operation[2]])
+                    volume -= max_volume
+                else:
+                    split_volume = volume / 2
+                    new_operations.append([split_volume, operation[1], operation[2]])
+                    new_operations.append([split_volume, operation[1], operation[2]])
+                    volume = 0
+            if volume > 0:
+                new_operations.append([volume, operation[1], operation[2]])
+        volumes, source_wells, destination_wells = [list(l) for l in zip(*new_operations)]
+        
         # Split the liquid handling operations so that the source wells are within one labware, and destination wells too
         source_labware = {well.parent for well in source_wells}
         destination_labware = {well.parent if isinstance(well, Well) else well for well in destination_wells}

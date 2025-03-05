@@ -403,7 +403,7 @@ class TestLiquidHandlerDistribute(unittest.TestCase):
         self.lh.p300_multi.dispense.assert_called()
         self.lh.p20.dispense.assert_not_called()
 
-class TestLiquidHandlerStamp(unittest.TestCase):
+class TestLiquidHandlerTransfer(unittest.TestCase):
     def setUp(self):
         # Initialize LiquidHandler with simulation mode
         self.lh = LiquidHandler(simulation=True, load_default=False)
@@ -435,9 +435,9 @@ class TestLiquidHandlerStamp(unittest.TestCase):
 
         # Act
         self.lh.transfer(
-            volumes=volume,
+            volumes=[volume]*16,
             source_wells=test_labware.columns()[2] + test_labware.columns()[3],
-            destination_wells=test_labware.columns()[0],
+            destination_wells=test_labware.columns()[0] + test_labware.columns()[0],
             new_tip="never",
             overhead_liquid=False,
             mix_after=mix_after
@@ -454,6 +454,25 @@ class TestLiquidHandlerStamp(unittest.TestCase):
         self.lh.p300_multi.drop_tip.assert_not_called()
         self.lh.p300_multi.mix.reset_mock()
         self.lh.p300_multi.dispense.reset_mock()
+
+    def test_transfer_mutlichannel_on_inequal_full_volumes(self):
+        # If inequal volumes exceed the pipette's max volume, the pipette should aspirate and dispense the first set of volumes in the multichannel mode, and then use the single channel mode for the remaining volumes (with multidispense)
+
+        # Arrange
+        volumes = [330, 325, 350, 328, 335, 340, 345, 337]
+
+
+        self.lh.transfer(
+            volumes=volumes,
+            source_wells=[self.mock_reservoir.wells()[0]]*8,
+            destination_wells=list(self.mock_labware.columns()[0]),
+            new_tip="never",
+            overhead_liquid=False,
+            add_air_gap=False
+        )
+
+        self.assertEqual(self.lh.p300_multi.dispense.call_count, 1 + 8)
+        self.assertEqual(self.lh.p300_multi.aspirate.call_count, 2)
 
 
 class TestLiquidHandlerAllocate(unittest.TestCase):
