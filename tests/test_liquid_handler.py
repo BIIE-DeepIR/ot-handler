@@ -188,7 +188,7 @@ class TestLiquidHandlerDistribute(unittest.TestCase):
             overhead_liquid=False
         )
         # Assert
-        self.lh.p300_multi.aspirate.assert_called_with(volume=100, location=self.source_well)
+        self.lh.p300_multi.aspirate.assert_called_with(volume=100, location=self.source_well, single_tip_mode=False)
         self.lh.p300_multi.dispense.assert_called()
         self.lh.p300_multi.blow_out.assert_called()
         
@@ -258,7 +258,7 @@ class TestLiquidHandlerDistribute(unittest.TestCase):
         )
         
         # Assert
-        self.lh.p300_multi.aspirate.assert_called_with(volume=90, location=self.source_well)
+        self.lh.p300_multi.aspirate.assert_called_with(volume=90, location=self.source_well, single_tip_mode=True)
         self.lh.p300_multi.dispense.assert_called()
         
     def test_distribute_single_vs_multiple_aspirations(self):
