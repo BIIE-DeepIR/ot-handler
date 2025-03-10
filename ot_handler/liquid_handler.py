@@ -860,7 +860,7 @@ class LiquidHandler:
             
             # Single aspirate, multi-dispense
             # Sort the dispense operations based on the destination well name
-            aspiration_sets = sorted([sorted(a_set, key=lambda x: str(x[1])) for a_set in aspiration_sets], key=lambda x: str(x[0][1]))
+            aspiration_sets = sorted([sorted(a_set, key=lambda x: (int(''.join(filter(str.isdigit, x[1].well_name))), ''.join(filter(str.isalpha, x[1].well_name)))) for a_set in aspiration_sets], key=lambda x: (int(''.join(filter(str.isdigit, x[0][1].well_name))), ''.join(filter(str.isalpha, x[0][1].well_name))))
             for aspiration_set in aspiration_sets:
                 # [[[source, dest, vol], [source, dest, vol]],[[source, dest2, vol2], [source, dest2, vol2]],...]
                 source_well = aspiration_set[0][0]

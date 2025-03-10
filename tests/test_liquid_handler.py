@@ -474,6 +474,37 @@ class TestLiquidHandlerTransfer(unittest.TestCase):
         self.assertEqual(self.lh.p300_multi.dispense.call_count, 1 + 8)
         self.assertEqual(self.lh.p300_multi.aspirate.call_count, 2)
 
+    def test_transfer_order_of_operations(self):
+        volumes = [5, 2, 7, 17, 12, 15, 1, 9]
+        source_well = self.mock_reservoir.wells()[0]
+        dest_wells = [self.mock_labware[w] for w in ["A1", "A2", "B1", "B2", "A3", "C1", "D1", "F5"]]
+
+        self.lh.transfer(
+            volumes=volumes,
+            source_wells=[source_well]*8,
+            destination_wells=dest_wells,
+            new_tip="always",
+            overhead_liquid=False,
+            add_air_gap=False
+        )
+
+        # Check number of calls
+        self.assertEqual(self.lh.p20.dispense.call_count, 8)
+        self.assertEqual(self.lh.p300_multi.dispense.call_count, 0)
+
+        # Get all dispense calls in order
+        dispense_calls = self.lh.p20.dispense.call_args_list
+
+        # Check each dispense operation matches expected volume and well
+        expected_operations = sorted(zip(volumes, dest_wells), key=lambda x: (x[1].well_name[1:], x[1].well_name[0]))
+
+        for (volume, well), call in zip(expected_operations, dispense_calls):
+            call_args, call_kwargs = call
+            self.assertEqual(call_args[1], well, f"Was expecting {well.well_name} but got {call_args[1].well_name}")
+            self.assertEqual(call_args[0], volume, f"Was expecting {volume} but got {call_args[0]}")
+
+        # Verify pick_up_tip and drop_tip were called for each operation (new_tip="always")
+        self.assertEqual(self.lh.p20.pick_up_tip.call_count, 8)
 
 class TestLiquidHandlerAllocate(unittest.TestCase):
     def setUp(self):
