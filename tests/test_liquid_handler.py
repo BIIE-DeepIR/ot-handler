@@ -1091,5 +1091,90 @@ class TestLoadDefaultLabware(unittest.TestCase):
         )
         self.assertEqual(self.lh.p300_multi.dispense.call_count, 12)
 
+class TestDeckLayout(unittest.TestCase):
+    def setUp(self):
+        self.lh = LiquidHandler(simulation=True, load_default=False)
+
+    def test_load_deck_layout_from_dict(self):
+        # Test loading deck layout directly from dictionary
+        layout = {
+            "modules": {"1": "temperature module gen2"},
+            "multichannel_tips": {"2": "opentrons_96_tiprack_300ul"},
+            "single_channel_tips": {"3": "opentrons_96_tiprack_20ul"},
+            "labware": {"4": "nest_96_wellplate_100ul_pcr_full_skirt"}
+        }
+
+        self.lh = LiquidHandler(simulation=True, load_default=False, deck_layout=layout)
+
+        # Verify modules were loaded
+        self.assertIsNotNone(self.lh.temperature_module)
+        
+        # Verify tips were loaded
+        self.assertEqual(len(self.lh.p300_tips), 1)
+        self.assertEqual(len(self.lh.single_p20_tips), 1)
+        
+        # Verify labware was loaded
+        self.assertIsNotNone(self.lh.protocol_api.deck["4"])
+
+    def test_load_deck_layout_overrides_default(self):
+        # Test that deck_layout parameter overrides load_default
+        layout = {
+            "modules": {"1": "temperature module gen2"},
+            "multichannel_tips": {"2": "opentrons_96_tiprack_300ul"},
+            "single_channel_tips": {"3": "opentrons_96_tiprack_20ul"},
+            "labware": {"4": "nest_96_wellplate_100ul_pcr_full_skirt"}
+        }
+
+        with patch.object(LiquidHandler, 'load_default_labware') as mock_load_default:
+            self.lh = LiquidHandler(simulation=True, load_default=True, deck_layout=layout)
+            mock_load_default.assert_not_called()
+
+    def test_load_deck_layout_empty_sections(self):
+        # Test loading deck layout with empty or missing sections
+        layout = {
+            "modules": {},
+            "multichannel_tips": {},
+            "single_channel_tips": {},
+            "labware": {"4": "nest_96_wellplate_100ul_pcr_full_skirt"}
+        }
+
+        self.lh = LiquidHandler(simulation=True, load_default=False, deck_layout=layout)
+
+        # Verify only labware was loaded
+        self.assertIsNone(self.lh.temperature_module)
+        self.assertEqual(len(self.lh.p300_tips), 0)
+        self.assertEqual(len(self.lh.single_p20_tips), 0)
+        self.assertIsNotNone(self.lh.protocol_api.deck["4"])
+
+    def test_load_deck_layout_missing_sections(self):
+        # Test loading deck layout with missing sections
+        layout = {
+            "labware": {"4": "nest_96_wellplate_100ul_pcr_full_skirt"}
+        }
+
+        self.lh = LiquidHandler(simulation=True, load_default=False, deck_layout=layout)
+
+        # Verify only labware was loaded
+        self.assertIsNone(self.lh.temperature_module)
+        self.assertEqual(len(self.lh.p300_tips), 0)
+        self.assertEqual(len(self.lh.single_p20_tips), 0)
+        self.assertIsNotNone(self.lh.protocol_api.deck["4"])
+
+    def test_load_deck_layout_invalid_file(self):
+        # Test handling of invalid file path
+        with self.assertRaises(FileNotFoundError):
+            self.lh = LiquidHandler(simulation=True, load_default=False, deck_layout="nonexistent.json")
+
+    def test_load_deck_layout_warning_with_default(self):
+        # Test that warning is issued when both load_default and deck_layout are provided
+        layout = {
+            "labware": {"4": "nest_96_wellplate_100ul_pcr_full_skirt"}
+        }
+
+        with self.assertLogs(level='WARNING') as log:
+            self.lh = LiquidHandler(simulation=True, load_default=True, deck_layout=layout)
+        
+        self.assertIn("Both load_default=True and deck_layout provided", log.output[0])
+
 if __name__ == '__main__':
     unittest.main()

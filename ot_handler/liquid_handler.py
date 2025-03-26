@@ -24,7 +24,7 @@ logging.basicConfig(
 
 
 class LiquidHandler:
-    def __init__(self, api_version: str = opentrons.protocol_api.MAX_SUPPORTED_VERSION, load_default: bool = True, simulation: bool = False, max_volume=None):
+    def __init__(self, api_version: str = opentrons.protocol_api.MAX_SUPPORTED_VERSION, load_default: bool = True, simulation: bool = False, max_volume=None, deck_layout=None):
         """
         Initialize a LiquidHandler instance.
         
@@ -36,7 +36,11 @@ class LiquidHandler:
             load_default (bool): Whether to load the default labware configuration from the file 'default_layout.ot2'. Defaults to True.
             simulation (bool): If True, the handler operates in simulation mode. Defaults to False.
             max_volume: Custom maximum volume setting for pipette transfers in ul. If not provided, defaults to the pipette's inherent max volume.
+            deck_layout (Union[str, dict]): Path to a JSON file or dictionary containing deck layout configuration. If provided, overrides load_default.
         """
+        # Check for conflicting parameters
+        if load_default and deck_layout is not None:
+            logging.warning("Both load_default=True and deck_layout provided. The deck_layout will override the default layout.")
 
         # initialize protocol API
         logging.info(f"Initializing protocol API with version {api_version}")
@@ -60,8 +64,17 @@ class LiquidHandler:
         self.shaker_module = None
         self.magnetic_module = None
 
+        # Load deck layout from file/dict or default
+        if deck_layout is not None:
+            if isinstance(deck_layout, str):
+                with open(deck_layout) as f:
+                    layout_config = json.load(f)
+            else:
+                layout_config = deck_layout
+            
+            self.load_deck_layout(layout_config)
         # Default labware
-        if load_default:
+        elif load_default:
             self.load_default_labware()
 
         # load fixed hardware
@@ -164,7 +177,6 @@ class LiquidHandler:
         if old != model_string:
             msg += " This overrides the previous value of {old}."
         logging.info(msg)
-
 
     def _allocate_liquid_handling_steps(self, source_wells, destination_wells, volumes):
         """
@@ -403,6 +415,35 @@ class LiquidHandler:
         with open(default_file, 'w') as file:
             json.dump(default_layout, file, indent=4)
 
+    def load_deck_layout(self, layout_config: dict):
+        """
+        Load deck configuration from a dictionary containing labware, tips, and module specifications.
+
+        Parameters:
+            layout_config (dict): Dictionary containing deck layout configuration with the following structure:
+                {
+                    "modules": {deck_position: model_string, ...},
+                    "multichannel_tips": {deck_position: model_string, ...},
+                    "single_channel_tips": {deck_position: model_string, ...},
+                    "labware": {deck_position: model_string, ...}
+                }
+        """
+        # Load modules first
+        for deck_position, model_string in layout_config.get("modules", {}).items():
+            self.load_module(model_string, deck_position)
+            
+        # Load multichannel tips
+        for deck_position, model_string in layout_config.get("multichannel_tips", {}).items():
+            self.load_tips(model_string, deck_position, single_channel=False)
+            
+        # Load single channel tips  
+        for deck_position, model_string in layout_config.get("single_channel_tips", {}).items():
+            self.load_tips(model_string, deck_position, single_channel=True)
+            
+        # Load other labware
+        for deck_position, model_string in layout_config.get("labware", {}).items():
+            self.load_labware(model_string, deck_position)
+
     def load_default_labware(self):
         """
         Load the default labware configuration from the default_layout.ot2 file.
@@ -418,21 +459,11 @@ class LiquidHandler:
                         break
             with open(default_file) as f:
                 default_layout = json.load(f)
-
-            for deck_position, model_string in default_layout["multichannel_tips"].items():
-                self.load_tips(model_string, deck_position, single_channel=False)
-
-            for deck_position, model_string in default_layout["single_channel_tips"].items():
-                self.load_tips(model_string, deck_position, single_channel=True)
-
-            for location, model_name in default_layout["modules"].items():
-                self.load_module(model_name, location)
-
-            for deck_position, model_string in default_layout["labware"].items():
-                self.load_labware(model_string, deck_position)                
+            
+            self.load_deck_layout(default_layout)
 
         except FileNotFoundError:
-            logging.error("No default layout file found. No default labware loaded")        
+            logging.error("No default layout file found. No default labware loaded")
 
     def load_labware(self, model_string: str, deck_position: int, name: str = "", add_to_default=False):
         """
