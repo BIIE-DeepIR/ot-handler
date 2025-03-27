@@ -4,33 +4,38 @@ import opentrons.execute
 from opentrons.protocol_api.labware import Well, Labware
 from opentrons.protocol_api.disposal_locations import TrashBin
 from opentrons.protocol_engine.errors import ProtocolCommandFailedError
-from opentrons.protocol_api.core.engine.deck_conflict import PartialTipMovementNotAllowedError
 from threading import Thread
 import os
 import time
 import math
 import logging
 import json
-import platform
 
-log_filepath = 'ot_handler.log'
+log_filepath = "ot_handler.log"
 
 logging.basicConfig(
     filename=log_filepath,
-    filemode='w',        # use 'w' for overwrite mode, 'a' for append mode
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG
+    filemode="w",  # use 'w' for overwrite mode, 'a' for append mode
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.DEBUG,
 )
 
 
 class LiquidHandler:
-    def __init__(self, api_version: str = opentrons.protocol_api.MAX_SUPPORTED_VERSION, load_default: bool = True, simulation: bool = False, max_volume=None, deck_layout=None):
+    def __init__(
+        self,
+        api_version: str = opentrons.protocol_api.MAX_SUPPORTED_VERSION,
+        load_default: bool = True,
+        simulation: bool = False,
+        max_volume=None,
+        deck_layout=None,
+    ):
         """
         Initialize a LiquidHandler instance.
-        
+
         This constructor sets up the protocol API interface, configures instrument parameters,
         and loads default labware if specified.
-        
+
         Parameters:
             api_version (str): The protocol API version to use. Defaults to '2.20'.
             load_default (bool): Whether to load the default labware configuration from the file 'default_layout.ot2'. Defaults to True.
@@ -40,7 +45,9 @@ class LiquidHandler:
         """
         # Check for conflicting parameters
         if load_default and deck_layout is not None:
-            logging.warning("Both load_default=True and deck_layout provided. The deck_layout will override the default layout.")
+            logging.warning(
+                "Both load_default=True and deck_layout provided. The deck_layout will override the default layout."
+            )
 
         # initialize protocol API
         logging.info(f"Initializing protocol API with version {api_version}")
@@ -53,7 +60,7 @@ class LiquidHandler:
         # default values
         self.p300_tips = []
         self.single_p300_tips = []
-        self.p20_tips = [] # Not yet supported
+        self.p20_tips = []  # Not yet supported
         self.single_p20_tips = []
         self.temperature_timer = None
         self.shaking_timer = None
@@ -71,7 +78,7 @@ class LiquidHandler:
                     layout_config = json.load(f)
             else:
                 layout_config = deck_layout
-            
+
             self.load_deck_layout(layout_config)
         # Default labware
         elif load_default:
@@ -83,14 +90,22 @@ class LiquidHandler:
 
         # self.p300 = self.protocol_api.load_instrument('p300_single_gen2', 'right', tip_racks=self.p300_tips)  # Not yet supported
 
-        self.p300_multi = self.protocol_api.load_instrument('p300_multi_gen2', 'right', tip_racks=self.p300_tips)
+        self.p300_multi = self.protocol_api.load_instrument(
+            "p300_multi_gen2", "right", tip_racks=self.p300_tips
+        )
         if len(self.p300_multi.tip_racks) == 0:
-            logging.warning("No tip racks confiugured for the pipette. Use lh.p300_multi.configure_nozzle_layout() to load the tips.")
+            logging.warning(
+                "No tip racks confiugured for the pipette. Use lh.p300_multi.configure_nozzle_layout() to load the tips."
+            )
 
-        self.p20 = self.protocol_api.load_instrument('p20_single_gen2', 'left', tip_racks=self.single_p20_tips)
+        self.p20 = self.protocol_api.load_instrument(
+            "p20_single_gen2", "left", tip_racks=self.single_p20_tips
+        )
         if len(self.p20.tip_racks) == 0:
-            logging.warning("No tip racks confiugured for the pipette. Use lh.p20.configure_nozzle_layout() to load the tips.")
-        
+            logging.warning(
+                "No tip racks confiugured for the pipette. Use lh.p20.configure_nozzle_layout() to load the tips."
+            )
+
         self.max_volume = max_volume if max_volume else self.p300_multi.max_volume
 
         # self.p20_multi = self.protocol_api.load_instrument('p20_multi_gen2', 'left', tip_racks=self.p20_multi_tips)  # Not yet supported
@@ -98,7 +113,7 @@ class LiquidHandler:
         logging.info("Closing labware latch")
         try:
             self.shaker_module.close_labware_latch()  # Currently all heater-shaker commands fail
-        except:
+        except Exception:
             pass
 
         self.home()
@@ -120,25 +135,24 @@ class LiquidHandler:
             if self.p300_multi.has_tip:
                 self.p300_multi.drop_tip()
             self.p300_multi.configure_nozzle_layout(
-                style=opentrons.protocol_api.SINGLE,
-                start="A1",
-                tip_racks=self.single_p300_tips
+                style=opentrons.protocol_api.SINGLE, start="A1", tip_racks=self.single_p300_tips
             )
             self.single_tip_mode = True
         elif not state and self.single_tip_mode:
             if self.p300_multi.has_tip:
                 self.p300_multi.drop_tip()
             self.p300_multi.configure_nozzle_layout(
-                style=opentrons.protocol_api.ALL,
-                tip_racks=self.p300_tips
+                style=opentrons.protocol_api.ALL, tip_racks=self.p300_tips
             )
             self.single_tip_mode = False
         return self.single_tip_mode
-    
-    def _save_labware_to_default(self, labware, model_string, deck_position, is_single_channel=False):
+
+    def _save_labware_to_default(
+        self, labware, model_string, deck_position, is_single_channel=False
+    ):
         deck_position = str(deck_position)
         try:
-            default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
+            default_file = os.path.join(os.path.dirname(__file__), "default_layout.ot2")
             if not os.path.isfile(default_file):
                 for root, dirs, files in os.walk(os.getcwd()):
                     if default_file in files:
@@ -147,7 +161,9 @@ class LiquidHandler:
             with open(default_file) as f:
                 default_layout = json.load(f)
         except FileNotFoundError:
-            logging.warning(f"The default layout file 'default_layout.ot2' does not exist. Creating an empty file at: {default_file}")
+            logging.warning(
+                f"The default layout file 'default_layout.ot2' does not exist. Creating an empty file at: {default_file}"
+            )
             default_layout = {
                 "labware": {},
                 "multichannel_tips": {},
@@ -171,7 +187,7 @@ class LiquidHandler:
         else:
             default_layout["modules"][deck_position] = model_string
 
-        with open(default_file, 'w') as file:
+        with open(default_file, "w") as file:
             json.dump(default_layout, file, indent=4)
         msg = f"{model_string} is now loaded on position {deck_position} by default."
         if old != model_string:
@@ -202,7 +218,6 @@ class LiquidHandler:
             if isinstance(well, TrashBin):
                 return "1"
 
-
         def get_row_index(well):
             if isinstance(well, Well):
                 return well.well_name[0]
@@ -212,10 +227,19 @@ class LiquidHandler:
         # Check that parameters are compatible with this function
         if not (isinstance(source_wells, list) and isinstance(source_wells[0], Well)):
             raise ValueError("The source_wells must be a list of Well objects")
-        if not (isinstance(destination_wells, list) and (isinstance(destination_wells[0], Well) or isinstance(destination_wells[0], TrashBin))):
-            raise ValueError("The destination_wells must be a list of Well objects or TrashBin objects")
+        if not (
+            isinstance(destination_wells, list)
+            and (
+                isinstance(destination_wells[0], Well) or isinstance(destination_wells[0], TrashBin)
+            )
+        ):
+            raise ValueError(
+                "The destination_wells must be a list of Well objects or TrashBin objects"
+            )
         if not (len(source_wells) == len(destination_wells) == len(volumes)):
-            raise ValueError("The number of wells in source and destination must be equal to the number of volumes provided.")
+            raise ValueError(
+                "The number of wells in source and destination must be equal to the number of volumes provided."
+            )
 
         source_labware = source_wells[0].parent
         for well in source_wells:
@@ -226,12 +250,18 @@ class LiquidHandler:
             destination_labware = destination_wells[0].parent
             for well in destination_wells:
                 if well.parent != destination_labware:
-                    raise ValueError("The operations to allocate must be between up to two labware.")
+                    raise ValueError(
+                        "The operations to allocate must be between up to two labware."
+                    )
 
             source_well_names = {well.well_name for well in source_wells}
             destination_well_names = {well.well_name for well in destination_wells}
-            if source_labware == destination_labware and source_well_names.intersection(destination_well_names):
-                raise ValueError("A well cannot be both a source and destination, because this function cannot be used for order-dependent liquid handling operations.")
+            if source_labware == destination_labware and source_well_names.intersection(
+                destination_well_names
+            ):
+                raise ValueError(
+                    "A well cannot be both a source and destination, because this function cannot be used for order-dependent liquid handling operations."
+                )
         else:
             destination_labware = destination_wells[0]
 
@@ -239,7 +269,9 @@ class LiquidHandler:
         pipette = self.p300_multi
         column_operations = {}
         large_volume_operations = []
-        for i, source, dest, vol in zip(range(len(volumes)), source_wells, destination_wells, volumes):
+        for i, source, dest, vol in zip(
+            range(len(volumes)), source_wells, destination_wells, volumes
+        ):
             if vol > pipette.min_volume:
                 op = (i, source, dest, vol)
                 large_volume_operations.append(op)
@@ -253,14 +285,22 @@ class LiquidHandler:
             if len(column_ops) >= 8:
                 volumes_set = set(op[3] for op in column_ops)
                 for vol in volumes_set:
-                    matching_volumes = [op for op in column_ops if op[3] == vol and op[0] not in multichannel_operations_indexes]
+                    matching_volumes = [
+                        op
+                        for op in column_ops
+                        if op[3] == vol and op[0] not in multichannel_operations_indexes
+                    ]
                     # Eight column-wise operations with the same volume exist
                     if len(matching_volumes) >= 8:
                         found = True
                         while found:
                             found = False
                             # Scenario 1: row indexes match and populate the whole column
-                            matching_rows = [op for op in matching_volumes if get_row_index(op[1]) == get_row_index(op[2])]
+                            matching_rows = [
+                                op
+                                for op in matching_volumes
+                                if get_row_index(op[1]) == get_row_index(op[2])
+                            ]
                             row_indices_source = {get_row_index(op[1]) for op in matching_rows}
                             row_indices_dest = {get_row_index(op[2]) for op in matching_rows}
                             if len(row_indices_source) == 8 and len(row_indices_dest) == 8:
@@ -269,25 +309,38 @@ class LiquidHandler:
 
                                 if len(ops_collection) == 8:
                                     multichannel_operations.append(ops_collection["A"])
-                                    multichannel_operations_indexes.extend([op[0] for op in ops_collection.values()])
-                                    matching_volumes = [op for op in matching_volumes if op[0] not in multichannel_operations_indexes]
+                                    multichannel_operations_indexes.extend(
+                                        [op[0] for op in ops_collection.values()]
+                                    )
+                                    matching_volumes = [
+                                        op
+                                        for op in matching_volumes
+                                        if op[0] not in multichannel_operations_indexes
+                                    ]
                                     found = True
                             else:
                                 # Scenario 2: source or destination well can fit all multichannel pipettes
                                 # Find a well that is present at least 8 times
                                 source_well_names = [op[1].well_name for op in matching_volumes]
-                                destination_well_names = [op[2].well_name if isinstance(op[2], Well) else "A1" for op in matching_volumes]
+                                destination_well_names = [
+                                    op[2].well_name if isinstance(op[2], Well) else "A1"
+                                    for op in matching_volumes
+                                ]
                                 source_well_count = {}
                                 destination_well_count = {}
                                 for well_name in source_well_names:
-                                    source_well_count[well_name] = source_well_count.get(well_name, 0) + 1
+                                    source_well_count[well_name] = (
+                                        source_well_count.get(well_name, 0) + 1
+                                    )
                                 for well_name in destination_well_names:
-                                    destination_well_count[well_name] = destination_well_count.get(well_name, 0) + 1
+                                    destination_well_count[well_name] = (
+                                        destination_well_count.get(well_name, 0) + 1
+                                    )
 
                                 source_troughs = []
                                 for name, count in source_well_count.items():
                                     well = source_labware.wells(name)[0]
-                                    if count >= 8 and hasattr(well, 'width') and well.width > 70:
+                                    if count >= 8 and hasattr(well, "width") and well.width > 70:
                                         source_troughs.append(well)
 
                                 destination_troughs = []
@@ -296,41 +349,75 @@ class LiquidHandler:
                                 else:
                                     for name, count in destination_well_count.items():
                                         well = destination_labware.wells(name)[0]
-                                        if count >= 8 and hasattr(well, 'width') and well.width > 70:
+                                        if (
+                                            count >= 8
+                                            and hasattr(well, "width")
+                                            and well.width > 70
+                                        ):
                                             destination_troughs.append(well)
                                 # Check transfers between troughs and columns
                                 check_set = [
                                     (source_troughs, destination_troughs, 2, 1),
-                                    (destination_troughs, source_troughs, 1, 2)
+                                    (destination_troughs, source_troughs, 1, 2),
                                 ]
                                 for primary, secondary, idxa, idxb in check_set:
                                     for well in primary:
                                         # Primary is a trough
-                                        ops = [op for op in matching_volumes if op[idxb] == well and op[0] not in multichannel_operations_indexes]
+                                        ops = [
+                                            op
+                                            for op in matching_volumes
+                                            if op[idxb] == well
+                                            and op[0] not in multichannel_operations_indexes
+                                        ]
                                         if len(ops) >= 8:
                                             found2 = True
                                             while found2:
                                                 found2 = False
                                                 # Scenario 1: secondary is a column
-                                                ops_collection = {get_row_index(op[idxa]): op for op in ops}
+                                                ops_collection = {
+                                                    get_row_index(op[idxa]): op for op in ops
+                                                }
                                                 if len(ops_collection) == 8:
-                                                    multichannel_operations.append(ops_collection["A"])
-                                                    multichannel_operations_indexes.extend([op[0] for op in ops_collection.values()])
-                                                    ops = [op for op in ops if op[0] not in multichannel_operations_indexes]
+                                                    multichannel_operations.append(
+                                                        ops_collection["A"]
+                                                    )
+                                                    multichannel_operations_indexes.extend(
+                                                        [op[0] for op in ops_collection.values()]
+                                                    )
+                                                    ops = [
+                                                        op
+                                                        for op in ops
+                                                        if op[0]
+                                                        not in multichannel_operations_indexes
+                                                    ]
                                                     found = True
                                                     found2 = True
                                                 else:
                                                     # Scenario 2: secondary is a trough
                                                     for dest_well in secondary:
-                                                        trough_to_trough = [op for op in ops if op[2] == dest_well]
+                                                        trough_to_trough = [
+                                                            op for op in ops if op[2] == dest_well
+                                                        ]
                                                         while len(trough_to_trough) >= 8:
                                                             # Operations are identical; add the first one
-                                                            multichannel_operations.append(trough_to_trough[0])
-                                                            multichannel_operations_indexes.extend([op[0] for op in trough_to_trough[:8]])
+                                                            multichannel_operations.append(
+                                                                trough_to_trough[0]
+                                                            )
+                                                            multichannel_operations_indexes.extend(
+                                                                [
+                                                                    op[0]
+                                                                    for op in trough_to_trough[:8]
+                                                                ]
+                                                            )
                                                             del trough_to_trough[:8]
                                                             found = True
                                                             found2 = True
-                                                            ops = [op for op in ops if op[0] not in multichannel_operations_indexes]
+                                                            ops = [
+                                                                op
+                                                                for op in ops
+                                                                if op[0]
+                                                                not in multichannel_operations_indexes
+                                                            ]
 
         allocated_operations = multichannel_operations_indexes
         p300_single_ops = []
@@ -339,16 +426,22 @@ class LiquidHandler:
             "opentrons_10_tuberack_falcon_4x50ml_6x15ml_conical",
             "opentrons_10_tuberack_nest_4x50ml_6x15ml_conical",
             "opentrons_15_tuberack_falcon_15ml_conical",
-            "opentrons_15_tuberack_nest_15ml_conical"
+            "opentrons_15_tuberack_nest_15ml_conical",
         ]
         for op in large_volume_operations:
             if op[0] in allocated_operations:
                 continue
-            if (source_labware.parent in ["1", "2", "3"] and get_row_index(op[1]) in ["G", "H"]) or (
-                destination_labware.parent in ["1", "2", "3"] and get_row_index(op[2]) in ["G", "H"]):
+            if (
+                source_labware.parent in ["1", "2", "3"] and get_row_index(op[1]) in ["G", "H"]
+            ) or (
+                destination_labware.parent in ["1", "2", "3"] and get_row_index(op[2]) in ["G", "H"]
+            ):
                 p20_ops.append(op)
                 allocated_operations.append(op[0])
-            elif source_labware.load_name in labware_forcing_p20 or destination_labware in labware_forcing_p20:
+            elif (
+                source_labware.load_name in labware_forcing_p20
+                or destination_labware in labware_forcing_p20
+            ):
                 p20_ops.append(op)
                 allocated_operations.append(op[0])
             else:
@@ -360,7 +453,7 @@ class LiquidHandler:
                 p20_ops.append([i, source_wells[i], destination_wells[i], volumes[i]])
 
         return multichannel_operations, p300_single_ops, p20_ops
-        
+
     def _find_parent(self, well: Well):
         while not isinstance(well, str):
             well = well.parent
@@ -371,7 +464,7 @@ class LiquidHandler:
         Home the robot to its initial position.
 
         This method ensures that the robot's pipettes and other movable components
-        return to their default starting positions. It is typically used at the 
+        return to their default starting positions. It is typically used at the
         beginning or end of a protocol to ensure that the robot is in a known state.
 
         This method also drops any tips that are currently held by the pipettes
@@ -381,7 +474,7 @@ class LiquidHandler:
         logging.debug("Homing...")
         self.protocol_api.home()
 
-    def toggle_light(self, state: bool=True):
+    def toggle_light(self, state: bool = True):
         """
         Toggles the light of the OT-2 robot based on the provided state.
 
@@ -400,7 +493,7 @@ class LiquidHandler:
             time.sleep(duration)
 
     def remove_default_position(self, deck_position):
-        default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
+        default_file = os.path.join(os.path.dirname(__file__), "default_layout.ot2")
         if not os.path.isfile(default_file):
             for root, dirs, files in os.walk(os.getcwd()):
                 if default_file in files:
@@ -408,11 +501,11 @@ class LiquidHandler:
                     break
         with open(default_file) as f:
             default_layout = json.load(f)
-        
+
         for key, _ in default_layout.items():
             del default_layout[key][deck_position]
 
-        with open(default_file, 'w') as file:
+        with open(default_file, "w") as file:
             json.dump(default_layout, file, indent=4)
 
     def load_deck_layout(self, layout_config: dict):
@@ -431,15 +524,15 @@ class LiquidHandler:
         # Load modules first
         for deck_position, model_string in layout_config.get("modules", {}).items():
             self.load_module(model_string, deck_position)
-            
+
         # Load multichannel tips
         for deck_position, model_string in layout_config.get("multichannel_tips", {}).items():
             self.load_tips(model_string, deck_position, single_channel=False)
-            
-        # Load single channel tips  
+
+        # Load single channel tips
         for deck_position, model_string in layout_config.get("single_channel_tips", {}).items():
             self.load_tips(model_string, deck_position, single_channel=True)
-            
+
         # Load other labware
         for deck_position, model_string in layout_config.get("labware", {}).items():
             self.load_labware(model_string, deck_position)
@@ -451,7 +544,7 @@ class LiquidHandler:
         """
         logging.info("Loading default labware from default_layout.ot2...")
         try:
-            default_file = os.path.join(os.path.dirname(__file__), 'default_layout.ot2')
+            default_file = os.path.join(os.path.dirname(__file__), "default_layout.ot2")
             if not os.path.isfile(default_file):
                 for root, dirs, files in os.walk(os.getcwd()):
                     if default_file in files:
@@ -459,13 +552,25 @@ class LiquidHandler:
                         break
             with open(default_file) as f:
                 default_layout = json.load(f)
-            
-            self.load_deck_layout(default_layout)
+
+            for deck_position, model_string in default_layout["multichannel_tips"].items():
+                self.load_tips(model_string, deck_position, single_channel=False)
+
+            for deck_position, model_string in default_layout["single_channel_tips"].items():
+                self.load_tips(model_string, deck_position, single_channel=True)
+
+            for location, model_name in default_layout["modules"].items():
+                self.load_module(model_name, location)
+
+            for deck_position, model_string in default_layout["labware"].items():
+                self.load_labware(model_string, deck_position)
 
         except FileNotFoundError:
             logging.error("No default layout file found. No default labware loaded")
 
-    def load_labware(self, model_string: str, deck_position: int, name: str = "", add_to_default=False):
+    def load_labware(
+        self, model_string: str, deck_position: int, name: str = "", add_to_default=False
+    ):
         """
         Load a specified labware onto the deck at a given position. If the designated position is occupied by a module,
         the labware will be loaded onto that module.
@@ -486,7 +591,7 @@ class LiquidHandler:
 
         if not name:
             name = model_string
-        
+
         deck_position = str(deck_position)
 
         # Check that the deck position is empty
@@ -496,7 +601,9 @@ class LiquidHandler:
                 self.protocol_api.deck[deck_position].type
                 on_module = True
             except AttributeError:
-                raise ValueError(f"Deck position {deck_position} is already occupied. Please choose an empty position.")
+                raise ValueError(
+                    f"Deck position {deck_position} is already occupied. Please choose an empty position."
+                )
 
         if on_module:
             logging.debug("Loading labware on the module")
@@ -504,16 +611,18 @@ class LiquidHandler:
                 labware = self.protocol_api.deck[deck_position].load_labware(model_string)
             except ProtocolCommandFailedError:
                 # The model string could match a custom labware file on the system
-                with open(f'labware/{model_string}.json') as labware_file:
+                with open(f"labware/{model_string}.json") as labware_file:
                     labware_def = json.load(labware_file)
-                labware = self.protocol_api.deck[deck_position].load_labware_from_definition(labware_def, None)
+                labware = self.protocol_api.deck[deck_position].load_labware_from_definition(
+                    labware_def, None
+                )
         else:
             logging.debug("Loading labware on an empty slot")
             try:
                 labware = self.protocol_api.load_labware(model_string, deck_position, label=name)
             except ProtocolCommandFailedError:
                 # The model string could match a custom labware file on the system
-                with open(f'labware/{model_string}.json') as labware_file:
+                with open(f"labware/{model_string}.json") as labware_file:
                     labware_def = json.load(labware_file)
                 labware = self.protocol_api.load_labware_from_definition(labware_def, deck_position)
 
@@ -527,8 +636,14 @@ class LiquidHandler:
         if add_to_default and not labware.is_tiprack:
             self._save_labware_to_default(labware, model_string, deck_position)
         return labware
-    
-    def load_tips(self, model_string: str, deck_position: int, single_channel: bool=False, add_to_default: bool=False):
+
+    def load_tips(
+        self,
+        model_string: str,
+        deck_position: int,
+        single_channel: bool = False,
+        add_to_default: bool = False,
+    ):
         """
         Load tips into the specified deck position, and add them to the corresponding pipettes, if loaded.
 
@@ -557,20 +672,28 @@ class LiquidHandler:
                     self.p20_tips.append(labware)
                     raise NotImplementedError("Multichannel p20 pipette is not yet supported.")
             if "200ul" in model_string and self.max_volume > 200:
-                logging.info(f"Limiting the maximum transfer volume from {self.max_volume} to 200ul due to tip size limit.")
+                logging.info(
+                    f"Limiting the maximum transfer volume from {self.max_volume} to 200ul due to tip size limit."
+                )
                 self.max_volume = 200
             if add_to_default:
-                self._save_labware_to_default(labware, model_string, deck_position, is_single_channel=single_channel)
+                self._save_labware_to_default(
+                    labware, model_string, deck_position, is_single_channel=single_channel
+                )
 
         else:
-            logging.error("A model string was passed to load_tips, which doesn't correspond to a tip rack. Labware is unloaded.")
+            logging.error(
+                "A model string was passed to load_tips, which doesn't correspond to a tip rack. Labware is unloaded."
+            )
             self.unload_labware(labware)
             return False
-        
+
         return labware
 
     def unload_labware(self, labware):
-        self.protocol_api.move_labware(labware=labware, location=self.protocol_api.OFF_DECK, use_gripper=False)
+        self.protocol_api.move_labware(
+            labware=labware, location=self.protocol_api.OFF_DECK, use_gripper=False
+        )
 
     def load_module(self, module_name: str, location: int, add_to_default=False):
         module = self.protocol_api.load_module(module_name, location)
@@ -585,7 +708,7 @@ class LiquidHandler:
 
         if add_to_default:
             self._save_labware_to_default(module, module_name, location)
-        
+
         return module
 
     def set_temperature(self, temperature: float, wait: bool = False):
@@ -609,7 +732,9 @@ class LiquidHandler:
             else:
                 self.temperature_module.set_temperature(temperature)
         else:
-            self.temperature_timer = Thread(target=self.temperature_module.set_temperature, args=(temperature,))
+            self.temperature_timer = Thread(
+                target=self.temperature_module.set_temperature, args=(temperature,)
+            )
             self.temperature_timer.start()
 
     def release_temperature(self):
@@ -632,7 +757,7 @@ class LiquidHandler:
             speed (float): The speed (rpm) to shake the shaker module at.
             duration (float): The duration (s) to shake the shaker module for.
             wait (bool): If True, wait for the shaking to finish before returning. If False, shake the shaker module in a separate thread if duration > 0.
-        
+
         TODO:
         - Check that the labware latch is closed. Same for other functions
         - Stop shaking and finish of this command should open the latch
@@ -692,18 +817,19 @@ class LiquidHandler:
                 self.p300_multi.return_tip()
 
     def transfer(
-            self,
-            volumes,
-            source_wells,
-            destination_wells,
-            new_tip: str="once",
-            touch_tip: bool=False,
-            blow_out_to: str="trash",
-            trash_tips: bool=True,
-            add_air_gap: bool=True,
-            overhead_liquid: bool=True,
-            mix_after=False,
-            **kwargs):
+        self,
+        volumes,
+        source_wells,
+        destination_wells,
+        new_tip: str = "once",
+        touch_tip: bool = False,
+        blow_out_to: str = "trash",
+        trash_tips: bool = True,
+        add_air_gap: bool = True,
+        overhead_liquid: bool = True,
+        mix_after=False,
+        **kwargs,
+    ):
         """
         Transfer specified volumes of liquid from source wells to destination wells.
 
@@ -723,7 +849,7 @@ class LiquidHandler:
         - overhead_liquid (bool, optional): Whether to aspirate extra liquid to ensure complete transfer.
         - mix_after (tuple, optional): First element is repetitions and second element is volume of mixing at the destination well after dispense. False when no mixing needed. Will block multi-dispense mode.
         - **kwargs: Additional keyword arguments for pipette operations.
-        
+
 
         Returns:
         - list: A list of failed operations, each represented as [index, well, volume].
@@ -733,19 +859,41 @@ class LiquidHandler:
         """
         logging.debug(f"Transfer called with new tip: {new_tip}")
 
-        operations_length = max(len(source_wells) if isinstance(source_wells, list) else 1, len(destination_wells) if isinstance(destination_wells, list) else 1)
-        
-        volumes = [volumes] * operations_length if isinstance(volumes, float) or isinstance(volumes, int) else volumes
-        volumes = volumes if isinstance(volumes, list) and len(volumes) == operations_length else volumes * len(source_wells)
-        
-        source_wells = source_wells if isinstance(source_wells, list) else [source_wells]
-        source_wells = source_wells if len(source_wells) == operations_length else source_wells * operations_length
-        
-        destination_wells = destination_wells if isinstance(destination_wells, list) else [destination_wells]
-        destination_wells = destination_wells if len(destination_wells) == operations_length else destination_wells * operations_length\
+        operations_length = max(
+            len(source_wells) if isinstance(source_wells, list) else 1,
+            len(destination_wells) if isinstance(destination_wells, list) else 1,
+        )
 
+        volumes = (
+            [volumes] * operations_length
+            if isinstance(volumes, float) or isinstance(volumes, int)
+            else volumes
+        )
+        volumes = (
+            volumes
+            if isinstance(volumes, list) and len(volumes) == operations_length
+            else volumes * len(source_wells)
+        )
+
+        source_wells = source_wells if isinstance(source_wells, list) else [source_wells]
+        source_wells = (
+            source_wells
+            if len(source_wells) == operations_length
+            else source_wells * operations_length
+        )
+
+        destination_wells = (
+            destination_wells if isinstance(destination_wells, list) else [destination_wells]
+        )
+        destination_wells = (
+            destination_wells
+            if len(destination_wells) == operations_length
+            else destination_wells * operations_length
+        )
         # Parameter validation
-        assert blow_out_to in ["source", "destination", "trash"], "The parameter blow_out_to must always be defined and one of source, destination or trash. Blow out happens only if there's air gap or overhead liquid"
+        assert blow_out_to in ["source", "destination", "trash"], (
+            "The parameter blow_out_to must always be defined and one of source, destination or trash. Blow out happens only if there's air gap or overhead liquid"
+        )
 
         # Check for volumes exceeding pipette max volume, and split those into multiple operations
         max_volume = self.p300_multi.max_volume
@@ -763,11 +911,13 @@ class LiquidHandler:
                     volume = 0
             if volume > 0:
                 new_operations.append([volume, operation[1], operation[2]])
-        volumes, source_wells, destination_wells = [list(l) for l in zip(*new_operations)]
-        
+        volumes, source_wells, destination_wells = [list(lst) for lst in zip(*new_operations)]
+
         # Split the liquid handling operations so that the source wells are within one labware, and destination wells too
         source_labware = {well.parent for well in source_wells}
-        destination_labware = {well.parent if isinstance(well, Well) else well for well in destination_wells}
+        destination_labware = {
+            well.parent if isinstance(well, Well) else well for well in destination_wells
+        }
         transfer_params = {
             "new_tip": new_tip,
             "touch_tip": touch_tip,
@@ -775,7 +925,7 @@ class LiquidHandler:
             "trash_tips": trash_tips,
             "add_air_gap": add_air_gap,
             "overhead_liquid": overhead_liquid,
-            **kwargs
+            **kwargs,
         }
         failed_operations = []
         done = False
@@ -786,10 +936,10 @@ class LiquidHandler:
                     transfer_params["new_tip"] = "never"
                 indexes = [i for i, well in enumerate(source_wells) if well.parent == labware]
                 failed_operations += self.transfer(
-                    [volumes[i] for i in indexes], 
-                    [source_wells[i] for i in indexes], 
+                    [volumes[i] for i in indexes],
+                    [source_wells[i] for i in indexes],
                     [destination_wells[i] for i in indexes],
-                    **transfer_params
+                    **transfer_params,
                 )
                 done = True
         elif len(destination_labware) > 1:
@@ -797,12 +947,16 @@ class LiquidHandler:
                 # Take a fresh tip only for the first call
                 if transfer_params["new_tip"] == "once" and done:
                     transfer_params["new_tip"] = "never"
-                indexes = [i for i, well in enumerate(destination_wells) if well.parent == labware or well == labware]
+                indexes = [
+                    i
+                    for i, well in enumerate(destination_wells)
+                    if well.parent == labware or well == labware
+                ]
                 failed_operations += self.transfer(
-                    [volumes[i] for i in indexes], 
-                    [source_wells[i] for i in indexes], 
+                    [volumes[i] for i in indexes],
+                    [source_wells[i] for i in indexes],
                     [destination_wells[i] for i in indexes],
-                    **transfer_params
+                    **transfer_params,
                 )
                 done = True
         if done:
@@ -811,9 +965,7 @@ class LiquidHandler:
         # Allocate the liquid handling operations to each available pipette configuration
         # Format: [index, source well, destination well, volume]
         p300_multi_steps, p300_single_steps, p20_steps = self._allocate_liquid_handling_steps(
-            source_wells=source_wells,
-            destination_wells=destination_wells,
-            volumes=volumes
+            source_wells=source_wells, destination_wells=destination_wells, volumes=volumes
         )
 
         # [pipette to use, in single channel mode, steps to take]
@@ -832,7 +984,11 @@ class LiquidHandler:
             grouped_sets = {1: [], 2: []}
             for pivot_set, p_idx in [[unique_source_wells, 1], [unique_destination_wells, 2]]:
                 for pivot_well in pivot_set:
-                    ops = [op for op in steps if op[p_idx] == pivot_well and op[0] not in allocated_indexes]
+                    ops = [
+                        op
+                        for op in steps
+                        if op[p_idx] == pivot_well and op[0] not in allocated_indexes
+                    ]
                     if len(ops) > 1:
                         ops.sort(key=lambda x: x[-1])
                         current_set = []
@@ -841,11 +997,20 @@ class LiquidHandler:
                             if idx in allocated_indexes or volume <= 0:
                                 continue
                             if volume < pipette.min_volume:
-                                logging.warning("Volume too low, requested operation ignored: dispense {volume} ul to {well} with pipette {pipette}")
+                                logging.warning(
+                                    "Volume too low, requested operation ignored: dispense {volume} ul to {well} with pipette {pipette}"
+                                )
                                 failed_operations.append([source, destination, volume])
                                 continue
                             # No multi-dispense if tip change is set as "always", no-multi aspiration if if tip change set as "always" or "on aspiration"
-                            if set_volume + volume < max_vol and new_tip != "always" and ((p_idx==1 and mix_after is False) or (p_idx==2 and new_tip != "on aspiration")):
+                            if (
+                                set_volume + volume < max_vol
+                                and new_tip != "always"
+                                and (
+                                    (p_idx == 1 and mix_after is False)
+                                    or (p_idx == 2 and new_tip != "on aspiration")
+                                )
+                            ):
                                 current_set.append([source, destination, volume])
                                 set_volume += volume
                                 allocated_indexes.append(idx)
@@ -857,7 +1022,9 @@ class LiquidHandler:
                                     sets = math.ceil(volume / max_vol)
                                     set_volume = volume / sets
                                     for i in range(sets):
-                                        grouped_sets[p_idx].append([[source, destination, set_volume]])
+                                        grouped_sets[p_idx].append(
+                                            [[source, destination, set_volume]]
+                                        )
                                     allocated_indexes.append(idx)
                                     continue
                                 current_set.append([source, destination, volume])
@@ -876,28 +1043,51 @@ class LiquidHandler:
                         sub_volume = volume / sets
                         for _ in range(sets):
                             orphan_operations.append([source, destination, sub_volume])
-                    
+
                     elif volume > pipette.min_volume:
                         orphan_operations.append([source, destination, volume])
                     else:
-                        logging.warning("Volume too low, requested operation ignored: dispense {volume} ul to {well} with pipette {pipette}")
+                        logging.warning(
+                            "Volume too low, requested operation ignored: dispense {volume} ul to {well} with pipette {pipette}"
+                        )
                         failed_operations.append([source, destination, volume])
-            
+
             first_round = True
             if single_tip_mode and steps:
                 self._set_single_tip_mode(True)
 
             # Actual liquid handling
-            
+
             # Single aspirate, multi-dispense
             # Sort the dispense operations based on the destination well name
-            aspiration_sets = sorted([sorted(a_set, key=lambda x: (int(''.join(filter(str.isdigit, x[1].well_name))), ''.join(filter(str.isalpha, x[1].well_name)))) for a_set in aspiration_sets], key=lambda x: (int(''.join(filter(str.isdigit, x[0][1].well_name))), ''.join(filter(str.isalpha, x[0][1].well_name))))
+            aspiration_sets = sorted(
+                [
+                    sorted(
+                        a_set,
+                        key=lambda x: (
+                            int("".join(filter(str.isdigit, x[1].well_name))),
+                            "".join(filter(str.isalpha, x[1].well_name)),
+                        ),
+                    )
+                    for a_set in aspiration_sets
+                ],
+                key=lambda x: (
+                    int("".join(filter(str.isdigit, x[0][1].well_name))),
+                    "".join(filter(str.isalpha, x[0][1].well_name)),
+                ),
+            )
             for aspiration_set in aspiration_sets:
                 # [[[source, dest, vol], [source, dest, vol]],[[source, dest2, vol2], [source, dest2, vol2]],...]
                 source_well = aspiration_set[0][0]
                 set_volume = sum([op[2] for op in aspiration_set])
-                extra_volume = min(pipette.min_volume, max(0, max_vol - set_volume)) if overhead_liquid else 0
-                air_gap = min(pipette.min_volume * 2, 20, max(0, max_vol - set_volume - extra_volume)) if add_air_gap else 0
+                extra_volume = (
+                    min(pipette.min_volume, max(0, max_vol - set_volume)) if overhead_liquid else 0
+                )
+                air_gap = (
+                    min(pipette.min_volume * 2, 20, max(0, max_vol - set_volume - extra_volume))
+                    if add_air_gap
+                    else 0
+                )
                 match new_tip:
                     case "always" | "on aspiration":
                         if pipette.has_tip:
@@ -913,45 +1103,55 @@ class LiquidHandler:
                     case _:
                         # Keep the tips already attached, otherwise pick up fresh ones
                         if not pipette.has_tip:
-                            pipette.pick_up_tip() 
+                            pipette.pick_up_tip()
                 if air_gap:
                     pipette.move_to(location=source_well.top(5))
                     pipette.air_gap(volume=air_gap)
-                pipette.aspirate(
-                    volume=set_volume + extra_volume,
-                    location=source_well
-                )
+                pipette.aspirate(volume=set_volume + extra_volume, location=source_well)
                 for idx, (source, dest, volume) in enumerate(aspiration_set):
                     pipette.dispense(volume, dest, **kwargs)
-                
+
                 if pipette.current_volume:
                     if blow_out_to != "trash" and new_tip in ["always", "on aspiration"]:
-                        logging.warning("Blow out to source or destination may result in contamination even when changing tips!")
+                        logging.warning(
+                            "Blow out to source or destination may result in contamination even when changing tips!"
+                        )
                     if blow_out_to == "trash":
                         pipette.blow_out(self.trash)
                     elif blow_out_to == "source":
                         pipette.blow_out(source_well.top())
                     elif blow_out_to == "destination":
                         pipette.blow_out(dest.top())
-                
+
                 if mix_after:
                     # Do not mix if there's liquid left it the pipette
                     if len(aspiration_set) == 1:
                         if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
-                            logging.warning(f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)")
+                            logging.warning(
+                                f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
+                            )
                         else:
-                            pipette.mix(repetitions=mix_after[0], volume=mix_after[1], location=dest)
+                            pipette.mix(
+                                repetitions=mix_after[0], volume=mix_after[1], location=dest
+                            )
                     else:
-                        logging.warning("Mixing ignored: trying to mix several wells during multi-dispense, which is not allowed.")
-            
+                        logging.warning(
+                            "Mixing ignored: trying to mix several wells during multi-dispense, which is not allowed."
+                        )
+
             # Multi-aspirate single dispense
             # Sort the dispense operations based on the source well name
-            dispense_sets = sorted([sorted(d_set, key=lambda x: str(x[0])) for d_set in dispense_sets], key=lambda x: str(x[0][0]))
+            dispense_sets = sorted(
+                [sorted(d_set, key=lambda x: str(x[0])) for d_set in dispense_sets],
+                key=lambda x: str(x[0][0]),
+            )
             for dispense_set in dispense_sets:
                 # [[[source1, dest, vol1], [source2, dest, vol2]],[[source3, dest, vol3], [source4, dest, vol4]],...]
                 destination_well = dispense_set[0][1]
                 set_volume = sum([op[2] for op in dispense_set])
-                air_gap = min(pipette.min_volume * 2, max(0, max_vol - set_volume)) if add_air_gap else 0
+                air_gap = (
+                    min(pipette.min_volume * 2, max(0, max_vol - set_volume)) if add_air_gap else 0
+                )
 
                 match new_tip:
                     case "always" | "on aspiration":
@@ -968,37 +1168,45 @@ class LiquidHandler:
                     case _:
                         # Keep the tips already attached, otherwise pick up fresh ones
                         if not pipette.has_tip:
-                            pipette.pick_up_tip() 
+                            pipette.pick_up_tip()
                 if air_gap:
                     pipette.move_to(location=dispense_set[0][0].top(5))
                     pipette.air_gap(volume=air_gap)
                 for source, dest, volume in dispense_set:
-                    pipette.aspirate(
-                        volume=volume,
-                        location=source,
-                        **kwargs
-                    )
+                    pipette.aspirate(volume=volume, location=source, **kwargs)
                 pipette.dispense(set_volume, destination_well, **kwargs)
                 if pipette.current_volume:
                     if blow_out_to == "trash":
                         pipette.blow_out(self.trash)
                     elif blow_out_to == "source":
-                        logging.warning("Ignoring blow-out: 'source' is invalid parameter when there are multiple sources")
+                        logging.warning(
+                            "Ignoring blow-out: 'source' is invalid parameter when there are multiple sources"
+                        )
                     else:
                         pipette.blow_out(destination_well.top())
-                
+
                 if mix_after:
                     if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
-                        logging.warning(f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)")
+                        logging.warning(
+                            f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
+                        )
                     else:
-                        pipette.mix(repetitions=mix_after[0], volume=mix_after[1], location=destination_well)
-            
+                        pipette.mix(
+                            repetitions=mix_after[0], volume=mix_after[1], location=destination_well
+                        )
+
             # Simple aspirate and dispense
             # Sort the dispense operations based on the source well name
             orphan_operations = sorted(orphan_operations, key=lambda x: str(x[0]))
             for source_well, destination_well, volume in orphan_operations:
-                extra_volume = min(pipette.min_volume, max(0, max_vol - volume)) if overhead_liquid else 0
-                air_gap = min(pipette.min_volume * 2, 20, max(0, max_vol - volume - extra_volume)) if add_air_gap else 0
+                extra_volume = (
+                    min(pipette.min_volume, max(0, max_vol - volume)) if overhead_liquid else 0
+                )
+                air_gap = (
+                    min(pipette.min_volume * 2, 20, max(0, max_vol - volume - extra_volume))
+                    if add_air_gap
+                    else 0
+                )
 
                 match new_tip:
                     case "always" | "on aspiration":
@@ -1019,11 +1227,7 @@ class LiquidHandler:
                 if air_gap:
                     pipette.move_to(location=source_well.top(5))
                     pipette.air_gap(volume=air_gap)
-                pipette.aspirate(
-                    volume=volume,
-                    location=source_well,
-                    **kwargs
-                )
+                pipette.aspirate(volume=volume, location=source_well, **kwargs)
                 pipette.dispense(volume, destination_well, **kwargs)
 
                 if pipette.current_volume:
@@ -1034,13 +1238,19 @@ class LiquidHandler:
                     elif blow_out_to == "destination":
                         pipette.blow_out(destination_well.top())
                     else:
-                        raise Exception("There is leftover volume in the pipette, while blow out is not enabled.")
-                
+                        raise Exception(
+                            "There is leftover volume in the pipette, while blow out is not enabled."
+                        )
+
                 if mix_after:
                     if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
-                        logging.warning(f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)")
+                        logging.warning(
+                            f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
+                        )
                     else:
-                        pipette.mix(repetitions=mix_after[0], volume=mix_after[1], location=destination_well)
+                        pipette.mix(
+                            repetitions=mix_after[0], volume=mix_after[1], location=destination_well
+                        )
 
             # All liquid handling is done
             if single_tip_mode:
@@ -1060,13 +1270,14 @@ class LiquidHandler:
         volumes,
         source_well,
         destination_wells,
-        new_tip: str="once",
-        touch_tip: bool=False,
-        blow_out_to: bool="trash",
-        trash_tips: bool=True,
-        add_air_gap: bool=True,
-        overhead_liquid: bool=True,
-        **kwargs):
+        new_tip: str = "once",
+        touch_tip: bool = False,
+        blow_out_to: bool = "trash",
+        trash_tips: bool = True,
+        add_air_gap: bool = True,
+        overhead_liquid: bool = True,
+        **kwargs,
+    ):
         """
         Distribute liquid from a source well to multiple destination wells.
 
@@ -1104,7 +1315,7 @@ class LiquidHandler:
             - Calculate tips in advance, raise error if not enough tips
             - Single tip touch before aspiration if reusing tips
             - Enable chaching of tips (providing a tip box location where tips are found with the well index)
-        
+
         Nice-to-have:
             - Optimize the order within the dispense set to minimize the path.
 
@@ -1126,14 +1337,14 @@ class LiquidHandler:
         if blow_out_to is False and new_tip in ["on aspiration", "always"]:
             msg = "blow_out_to should be set to True when new_tip is 'on aspiration' or 'always'. Setting to True."
             logging.warning(msg)
-            blow_out_to=True
+            blow_out_to = True
 
         if isinstance(volumes, float) or isinstance(volumes, int):
-            volumes = [volumes]*len(destination_wells)
+            volumes = [volumes] * len(destination_wells)
 
         return self.transfer(
             volumes,
-            [source_well]*len(destination_wells),
+            [source_well] * len(destination_wells),
             destination_wells,
             new_tip=new_tip,
             touch_tip=touch_tip,
@@ -1141,9 +1352,9 @@ class LiquidHandler:
             trash_tips=trash_tips,
             add_air_gap=add_air_gap,
             overhead_liquid=overhead_liquid,
-            **kwargs
+            **kwargs,
         )
-        
+
     def pool(
         self,
         volumes,
@@ -1153,7 +1364,8 @@ class LiquidHandler:
         touch_tip: bool = False,
         trash_tips: bool = True,
         add_air_gap: bool = True,
-        **kwargs):
+        **kwargs,
+    ):
         """
         Collects liquid from multiple source wells and combines it into a single destination well.
 
@@ -1174,10 +1386,14 @@ class LiquidHandler:
         # Checking and reformatting parameters
         if isinstance(destination_well, list):
             if len(destination_well) >= 1:
-                raise TypeError(f"The destination well must be a Well object or a list of a single Well, got {type(destination_well)}.")
+                raise TypeError(
+                    f"The destination well must be a Well object or a list of a single Well, got {type(destination_well)}."
+                )
             destination_well = destination_well[0]
         if not isinstance(destination_well, Well) and not isinstance(destination_well, TrashBin):
-            raise TypeError(f"The destination well must be a Well object, TashBin or a list of a single Well, got {type(destination_well)}.")
+            raise TypeError(
+                f"The destination well must be a Well object, TashBin or a list of a single Well, got {type(destination_well)}."
+            )
 
         if isinstance(source_wells, Well):
             source_wells = [source_wells]
@@ -1203,9 +1419,9 @@ class LiquidHandler:
             trash_tips=trash_tips,
             add_air_gap=add_air_gap,
             overhead_liquid=False,
-            **kwargs
+            **kwargs,
         )
-    
+
     def consolidate(self, *args, **kwargs):
         # Ensure same naming convention is available
         return self.pool(*args, **kwargs)
@@ -1215,14 +1431,15 @@ class LiquidHandler:
         volume: float,
         source_plate,
         destination_plate,
-        sample_count: int =0,
-        new_tip: str="always",
-        touch_tip: bool=False,
-        blow_out_to: bool="destination",
-        trash_tips: bool=True,
-        add_air_gap: bool=True,
-        overhead_liquid: bool=False,
-        **kwargs):
+        sample_count: int = 0,
+        new_tip: str = "always",
+        touch_tip: bool = False,
+        blow_out_to: bool = "destination",
+        trash_tips: bool = True,
+        add_air_gap: bool = True,
+        overhead_liquid: bool = False,
+        **kwargs,
+    ):
         """
         Stamp a plate with a pipette selected based on the specified volume. This method assumes that the sample count
         progresses column by column, from top to bottom. For cherry-picking wells or stamping variable volumes, use the
@@ -1253,7 +1470,7 @@ class LiquidHandler:
             destination_wells = destination_wells[:sample_count]
 
         if isinstance(volume, float) or isinstance(volume, int):
-            volumes = [volume]*len(destination_wells)
+            volumes = [volume] * len(destination_wells)
 
         return self.transfer(
             volumes,
@@ -1265,7 +1482,7 @@ class LiquidHandler:
             trash_tips=trash_tips,
             add_air_gap=add_air_gap,
             overhead_liquid=overhead_liquid,
-            **kwargs
+            **kwargs,
         )
 
     def mix(self, wells, repetitions, volume, new_tip="once", trash_tip=True):
@@ -1278,11 +1495,13 @@ class LiquidHandler:
             volume (float): The volume to aspirate and dispense during mixing.
             new_tip (str): Strategy for using tips. Options are "always", "once", "never". Default is "once".
             trash_tip (bool): Whether to discard tips after use. Default is True.
-        
+
         TODO:
         - Could this be done with transfer, using the mix after, but zero aspiration for same source and destination?
         """
-        logging.debug(f"Mixing {len(wells)} wells with {repetitions} repetitions at {volume}µL each")
+        logging.debug(
+            f"Mixing {len(wells)} wells with {repetitions} repetitions at {volume}µL each"
+        )
 
         fresh_tip = False
         i = 0
@@ -1299,7 +1518,7 @@ class LiquidHandler:
                 self._set_single_tip_mode(True)
             else:
                 pipette = self.p20
-                
+
             if not pipette.has_tip:
                 pipette.pick_up_tip()
             elif not fresh_tip and new_tip == "always" or (i == 0 and new_tip == "once"):
@@ -1323,7 +1542,7 @@ class LiquidHandler:
                 pipette.drop_tip()
             else:
                 pipette.return_tip()
-        
+
         if pipette == self.p300_multi:
             self._set_single_tip_mode(False)
 
