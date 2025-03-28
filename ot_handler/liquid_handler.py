@@ -2,6 +2,7 @@ import opentrons
 import opentrons.simulate
 import opentrons.execute
 from opentrons.protocol_api.labware import Well, Labware
+from opentrons.protocol_api.labware import OutOfTipsError
 from opentrons.protocol_api.disposal_locations import TrashBin
 from opentrons.protocol_engine.errors import ProtocolCommandFailedError
 from threading import Thread
@@ -200,6 +201,8 @@ class LiquidHandler:
         - p300 multichannel compatible operations
         - p300 single channel compatible operations
         - p20 single channel compatible operations
+
+        Format for operations: [index, source_well, destination_well, volume]
 
         Allocation is based on:
         - Volume of each operation
@@ -450,7 +453,9 @@ class LiquidHandler:
 
         for i in range(len(volumes)):
             if i not in allocated_operations:
-                p20_ops.append([i, source_wells[i], destination_wells[i], volumes[i]])
+                p20_ops.append(
+                    [i, source_wells[i], destination_wells[i], volumes[i]]
+                )  # i is the original index
 
         return multichannel_operations, p300_single_ops, p20_ops
 
@@ -691,9 +696,13 @@ class LiquidHandler:
         return labware
 
     def unload_labware(self, labware):
-        self.protocol_api.move_labware(
-            labware=labware, location=self.protocol_api.OFF_DECK, use_gripper=False
-        )
+        if isinstance(labware, opentrons.protocol_api.labware.Labware):
+            self.unload_labware_from_slot(labware.location)
+        else:
+            raise ValueError("Labware is not a valid labware object.")
+
+    def unload_labware_from_slot(self, slot):
+        del self.protocol_api.deck[slot]
 
     def load_module(self, module_name: str, location: int, add_to_default=False):
         module = self.protocol_api.load_module(module_name, location)
@@ -843,7 +852,7 @@ class LiquidHandler:
         - destination_wells (list of Well): The wells to which liquid will be dispensed.
         - new_tip (str, optional): Strategy for using tips. Options are "once", "always", "on aspiration", or "never".
         - touch_tip (bool, optional): Whether to touch the tip to the side of the well after aspirating or dispensing.
-        - blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination" or "trash".
+        - blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination" or "trash". Empty string will result in no blow-out.
         - trash_tips (bool, optional): Whether to discard tips after use.
         - add_air_gap (bool, optional): Whether to add an air gap after aspiration.
         - overhead_liquid (bool, optional): Whether to aspirate extra liquid to ensure complete transfer.
@@ -852,10 +861,13 @@ class LiquidHandler:
 
 
         Returns:
-        - list: A list of failed operations, each represented as [index, well, volume].
+        - list: A list of failed operations, each represented as [source, destination, volume, index, reason].
+          The reason field explains why the operation failed (e.g., "volume_too_low", "out_of_tips", "pipette_error").
+          Please note that even if an operation fails, it might have already aspirated liquid and been partially executed.
 
-        TODO:
-        - Don't stop on error, but keep handling the liquids and return the failed operations
+        Note:
+        - The method gracefully handles OutOfTipsError by continuing with operations that don't involve the pipette
+          that ran out of tips, and returning the operations that failed due to lack of tips.
         """
         logging.debug(f"Transfer called with new tip: {new_tip}")
 
@@ -891,8 +903,8 @@ class LiquidHandler:
             else destination_wells * operations_length
         )
         # Parameter validation
-        assert blow_out_to in ["source", "destination", "trash"], (
-            "The parameter blow_out_to must always be defined and one of source, destination or trash. Blow out happens only if there's air gap or overhead liquid"
+        assert blow_out_to in ["source", "destination", "trash", ""], (
+            "The parameter blow_out_to must always be defined and one of source, destination or trash or empty string. Blow out happens only if there's air gap or overhead liquid"
         )
 
         # Check for volumes exceeding pipette max volume, and split those into multiple operations
@@ -970,13 +982,68 @@ class LiquidHandler:
 
         # [pipette to use, in single channel mode, steps to take]
         allocated_sets = [
-            [self.p300_multi, False, p300_multi_steps],
-            [self.p300_multi, True, p300_single_steps],
-            [self.p20, False, p20_steps],
+            [self.p300_multi, False, p300_multi_steps, "p300_multi"],
+            [self.p300_multi, True, p300_single_steps, "p300_multisingle"],
+            [self.p20, False, p20_steps, "p20"],
         ]
+
+        # Track which pipettes have run out of tips
+        out_of_tips_pipettes = set()
+
         # When possible, group the operations for multi-dispense and multi-aspiration
         allocated_indexes = []
-        for pipette, single_tip_mode, steps in allocated_sets:
+        for pipette, single_tip_mode, steps, pipette_name in allocated_sets:
+            # Skip operations for pipettes that have run out of tips
+            if pipette_name in out_of_tips_pipettes:
+                # Add all operations from this pipette to failed operations
+                for idx, source, destination, volume in steps:
+                    if idx not in allocated_indexes:
+                        if pipette_name == "p300_multi":
+                            # Recreate the original operations
+                            hidden_source_wells = source.parent.columns()[
+                                int(source.well_name[1:]) - 1
+                            ]
+                            if len(hidden_source_wells) == 1:
+                                hidden_source_wells = hidden_source_wells * 8
+                            hidden_destination_wells = destination.parent.columns()[
+                                int(destination.well_name[1:]) - 1
+                            ]
+                            if len(hidden_destination_wells) == 1:
+                                hidden_destination_wells = hidden_destination_wells * 8
+                            for i in range(8):
+                                original_idx = -1
+                                for op in zip(
+                                    source_wells,
+                                    destination_wells,
+                                    volumes,
+                                    range(len(source_wells)),
+                                ):
+                                    if (
+                                        op[0] == hidden_source_wells[i]
+                                        and op[1] == hidden_destination_wells[i]
+                                        and op[2] == volume
+                                    ):
+                                        original_idx = op[3]
+                                        break
+                                if original_idx not in [o[3] for o in failed_operations]:
+                                    failed_operations.append(
+                                        [
+                                            hidden_source_wells[i],
+                                            hidden_destination_wells[i],
+                                            volume,
+                                            original_idx,
+                                            "out_of_tips",
+                                        ]
+                                    )
+                                allocated_indexes.append(original_idx)
+                        else:
+                            if idx not in [o[3] for o in failed_operations]:
+                                failed_operations.append(
+                                    [source, destination, volume, idx, "out_of_tips"]
+                                )
+                            allocated_indexes.append(idx)
+                continue
+
             max_vol = min(self.max_volume, pipette.max_volume)
             unique_source_wells = {op[1] for op in steps}
             unique_destination_wells = {op[2] for op in steps}
@@ -998,9 +1065,50 @@ class LiquidHandler:
                                 continue
                             if volume < pipette.min_volume:
                                 logging.warning(
-                                    "Volume too low, requested operation ignored: dispense {volume} ul to {well} with pipette {pipette}"
+                                    f"Volume too low, requested operation ignored: dispense {volume} ul to {destination} with pipette {pipette}"
                                 )
-                                failed_operations.append([source, destination, volume])
+                                if pipette_name == "p300_multi":
+                                    # Recreate the original operations
+                                    hidden_source_wells = source.parent.columns()[
+                                        int(source.well_name[1:]) - 1
+                                    ]
+                                    if len(hidden_source_wells) == 1:
+                                        hidden_source_wells = hidden_source_wells * 8
+                                    hidden_destination_wells = destination.parent.columns()[
+                                        int(destination.well_name[1:]) - 1
+                                    ]
+                                    if len(hidden_destination_wells) == 1:
+                                        hidden_destination_wells = hidden_destination_wells * 8
+                                    for i in range(len(source_wells)):
+                                        for op in zip(
+                                            source_wells,
+                                            destination_wells,
+                                            volumes,
+                                            range(len(source_wells)),
+                                        ):
+                                            if (
+                                                op[0] == hidden_source_wells[i]
+                                                and op[1] == hidden_destination_wells[i]
+                                                and op[2] == volume
+                                            ):
+                                                original_idx = op[3]
+                                                break
+                                        if original_idx not in [o[3] for o in failed_operations]:
+                                            failed_operations.append(
+                                                [
+                                                    hidden_source_wells[i],
+                                                    hidden_destination_wells[i],
+                                                    volume,
+                                                    original_idx,
+                                                    "volume_too_low",
+                                                ]
+                                            )
+                                        allocated_indexes.append(original_idx)
+                                else:
+                                    if idx not in [o[3] for o in failed_operations]:
+                                        failed_operations.append(
+                                            [source, destination, volume, idx, "volume_too_low"]
+                                        )
                                 continue
                             # No multi-dispense if tip change is set as "always", no-multi aspiration if if tip change set as "always" or "on aspiration"
                             if (
@@ -1011,7 +1119,7 @@ class LiquidHandler:
                                     or (p_idx == 2 and new_tip != "on aspiration")
                                 )
                             ):
-                                current_set.append([source, destination, volume])
+                                current_set.append([source, destination, volume, idx])
                                 set_volume += volume
                                 allocated_indexes.append(idx)
                             else:
@@ -1023,11 +1131,11 @@ class LiquidHandler:
                                     set_volume = volume / sets
                                     for i in range(sets):
                                         grouped_sets[p_idx].append(
-                                            [[source, destination, set_volume]]
+                                            [[source, destination, set_volume, idx]]
                                         )
                                     allocated_indexes.append(idx)
                                     continue
-                                current_set.append([source, destination, volume])
+                                current_set.append([source, destination, volume, idx])
                                 allocated_indexes.append(idx)
                                 set_volume = volume
                         if current_set:
@@ -1042,16 +1150,18 @@ class LiquidHandler:
                         sets = math.ceil(volume / max_vol)
                         sub_volume = volume / sets
                         for _ in range(sets):
-                            orphan_operations.append([source, destination, sub_volume])
+                            orphan_operations.append([source, destination, sub_volume, idx])
 
                     elif volume > pipette.min_volume:
-                        orphan_operations.append([source, destination, volume])
+                        orphan_operations.append([source, destination, volume, idx])
                     else:
                         logging.warning(
-                            "Volume too low, requested operation ignored: dispense {volume} ul to {well} with pipette {pipette}"
+                            f"Volume too low, requested operation ignored: dispense {volume} ul to {destination} with pipette {pipette}"
                         )
-                        failed_operations.append([source, destination, volume])
-
+                        if idx not in [o[3] for o in failed_operations]:
+                            failed_operations.append(
+                                [source, destination, volume, idx, "volume_too_low"]
+                            )
             first_round = True
             if single_tip_mode and steps:
                 self._set_single_tip_mode(True)
@@ -1077,6 +1187,55 @@ class LiquidHandler:
                 ),
             )
             for aspiration_set in aspiration_sets:
+                # Skip this set if pipette has run out of tips
+                if pipette_name in out_of_tips_pipettes:
+                    # Add all operations in this set to failed operations
+                    for source, destination, volume, orig_idx in aspiration_set:
+                        if pipette_name == "p300_multi":
+                            # Recreate the original operations
+                            hidden_source_wells = source.parent.columns()[
+                                int(source.well_name[1:]) - 1
+                            ]
+                            if len(hidden_source_wells) == 1:
+                                hidden_source_wells = hidden_source_wells * 8
+                            hidden_destination_wells = destination.parent.columns()[
+                                int(destination.well_name[1:]) - 1
+                            ]
+                            if len(hidden_destination_wells) == 1:
+                                hidden_destination_wells = hidden_destination_wells * 8
+                            for i in range(8):
+                                original_idx = -1
+                                for op in zip(
+                                    source_wells,
+                                    destination_wells,
+                                    volumes,
+                                    range(len(source_wells)),
+                                ):
+                                    if (
+                                        op[0] == hidden_source_wells[i]
+                                        and op[1] == hidden_destination_wells[i]
+                                        and op[2] == volume
+                                    ):
+                                        original_idx = op[3]
+                                        break
+                                if original_idx not in [o[3] for o in failed_operations]:
+                                    failed_operations.append(
+                                        [
+                                            hidden_source_wells[i],
+                                            hidden_destination_wells[i],
+                                            volume,
+                                            original_idx,
+                                            "out_of_tips",
+                                        ]
+                                    )
+                                allocated_indexes.append(original_idx)
+                        else:
+                            if orig_idx not in [o[3] for o in failed_operations]:
+                                failed_operations.append(
+                                    [source, destination, volume, orig_idx, "out_of_tips"]
+                                )
+                    continue
+
                 # [[[source, dest, vol], [source, dest, vol]],[[source, dest2, vol2], [source, dest2, vol2]],...]
                 source_well = aspiration_set[0][0]
                 set_volume = sum([op[2] for op in aspiration_set])
@@ -1088,56 +1247,173 @@ class LiquidHandler:
                     if add_air_gap
                     else 0
                 )
-                match new_tip:
-                    case "always" | "on aspiration":
-                        if pipette.has_tip:
-                            pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
-                        pipette.pick_up_tip()
-                    case "once":
-                        if first_round:
+
+                try:
+                    match new_tip:
+                        case "always" | "on aspiration":
                             if pipette.has_tip:
-                                pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
-                            first_round = False
-                        if not pipette.has_tip:
+                                pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                             pipette.pick_up_tip()
-                    case _:
-                        # Keep the tips already attached, otherwise pick up fresh ones
-                        if not pipette.has_tip:
-                            pipette.pick_up_tip()
-                if air_gap:
-                    pipette.move_to(location=source_well.top(5))
-                    pipette.air_gap(volume=air_gap)
-                pipette.aspirate(volume=set_volume + extra_volume, location=source_well)
-                for idx, (source, dest, volume) in enumerate(aspiration_set):
-                    pipette.dispense(volume, dest, **kwargs)
-
-                if pipette.current_volume:
-                    if blow_out_to != "trash" and new_tip in ["always", "on aspiration"]:
-                        logging.warning(
-                            "Blow out to source or destination may result in contamination even when changing tips!"
-                        )
-                    if blow_out_to == "trash":
-                        pipette.blow_out(self.trash)
-                    elif blow_out_to == "source":
-                        pipette.blow_out(source_well.top())
-                    elif blow_out_to == "destination":
-                        pipette.blow_out(dest.top())
-
-                if mix_after:
-                    # Do not mix if there's liquid left it the pipette
-                    if len(aspiration_set) == 1:
-                        if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
-                            logging.warning(
-                                f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
-                            )
+                        case "once":
+                            if first_round:
+                                if pipette.has_tip:
+                                    pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
+                                first_round = False
+                            if not pipette.has_tip:
+                                pipette.pick_up_tip()
+                        case _:
+                            # Keep the tips already attached, otherwise pick up fresh ones
+                            if not pipette.has_tip:
+                                pipette.pick_up_tip()
+                except OutOfTipsError:
+                    logging.error(
+                        f"Out of tips for {pipette}. Marking all related operations as failed."
+                    )
+                    out_of_tips_pipettes.add(pipette_name)
+                    # Add all operations in this set to failed operations
+                    for source, destination, volume, orig_idx in aspiration_set:
+                        if pipette_name == "p300_multi":
+                            # Recreate the original operations
+                            hidden_source_wells = source.parent.columns()[
+                                int(source.well_name[1:]) - 1
+                            ]
+                            if len(hidden_source_wells) == 1:
+                                hidden_source_wells = hidden_source_wells * 8
+                            hidden_destination_wells = destination.parent.columns()[
+                                int(destination.well_name[1:]) - 1
+                            ]
+                            if len(hidden_destination_wells) == 1:
+                                hidden_destination_wells = hidden_destination_wells * 8
+                            for i in range(8):
+                                original_idx = -1
+                                for op in zip(
+                                    source_wells,
+                                    destination_wells,
+                                    volumes,
+                                    range(len(source_wells)),
+                                ):
+                                    if (
+                                        op[0] == hidden_source_wells[i]
+                                        and op[1] == hidden_destination_wells[i]
+                                        and op[2] == volume
+                                    ):
+                                        original_idx = op[3]
+                                        break
+                                if original_idx not in [o[3] for o in failed_operations]:
+                                    failed_operations.append(
+                                        [
+                                            hidden_source_wells[i],
+                                            hidden_destination_wells[i],
+                                            volume,
+                                            original_idx,
+                                            "out_of_tips",
+                                        ]
+                                    )
                         else:
-                            pipette.mix(
-                                repetitions=mix_after[0], volume=mix_after[1], location=dest
-                            )
-                    else:
-                        logging.warning(
-                            "Mixing ignored: trying to mix several wells during multi-dispense, which is not allowed."
-                        )
+                            if orig_idx not in [o[3] for o in failed_operations]:
+                                failed_operations.append(
+                                    [source, destination, volume, orig_idx, "out_of_tips"]
+                                )
+                    continue
+
+                try:
+                    # Perform aspiration with air gap
+                    if air_gap:
+                        pipette.move_to(location=source_well.top(5))
+                        pipette.air_gap(volume=air_gap)
+                    pipette.aspirate(
+                        volume=set_volume + extra_volume, location=source_well, **kwargs
+                    )
+                    if touch_tip:
+                        pipette.touch_tip(v_offset=-1)
+
+                    # Perform dispenses
+                    last_index = 0
+                    for last_index, (source, destination_well, volume, orig_idx) in enumerate(
+                        aspiration_set
+                    ):
+                        pipette.dispense(volume=volume, location=destination_well, **kwargs)
+                        if touch_tip:
+                            pipette.touch_tip(v_offset=-1)
+
+                        if mix_after:
+                            if len(aspiration_set) == 1:
+                                if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
+                                    logging.warning(
+                                        f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
+                                    )
+                                else:
+                                    pipette.mix(
+                                        repetitions=mix_after[0],
+                                        volume=mix_after[1],
+                                        location=destination_well,
+                                    )
+                            else:
+                                logging.warning(
+                                    "Mixing ignored: mixing volume is not supported for multi-dispense operations"
+                                )
+
+                    # Handle remaining volume
+                    if pipette.current_volume:
+                        if blow_out_to == "trash":
+                            pipette.blow_out(self.trash)
+                        elif blow_out_to == "source":
+                            pipette.blow_out(source_well.top())
+                        elif blow_out_to == "destination":
+                            pipette.blow_out(destination_well.top())
+
+                except Exception as e:
+                    logging.error(f"Error during aspiration/dispense: {str(e)}")
+                    for source, destination, volume, orig_idx in aspiration_set[last_index:]:
+                        if pipette_name == "p300_multi":
+                            # Recreate the original operations
+                            hidden_source_wells = source.parent.columns()[
+                                int(source.well_name[1:]) - 1
+                            ]
+                            if len(hidden_source_wells) == 1:
+                                hidden_source_wells = hidden_source_wells * 8
+                            hidden_destination_wells = destination.parent.columns()[
+                                int(destination.well_name[1:]) - 1
+                            ]
+                            if len(hidden_destination_wells) == 1:
+                                hidden_destination_wells = hidden_destination_wells * 8
+                            for i in range(8):
+                                original_idx = -1
+                                for op in zip(
+                                    source_wells,
+                                    destination_wells,
+                                    volumes,
+                                    range(len(source_wells)),
+                                ):
+                                    if (
+                                        op[0] == hidden_source_wells[i]
+                                        and op[1] == hidden_destination_wells[i]
+                                        and op[2] == volume
+                                    ):
+                                        original_idx = op[3]
+                                        break
+                                if original_idx not in [o[3] for o in failed_operations]:
+                                    failed_operations.append(
+                                        [
+                                            hidden_source_wells[i],
+                                            hidden_destination_wells[i],
+                                            volume,
+                                            original_idx,
+                                            f"pipette_error: {str(e)}",
+                                        ]
+                                    )
+                                allocated_indexes.append(original_idx)
+                        else:
+                            if orig_idx not in [o[3] for o in failed_operations]:
+                                failed_operations.append(
+                                    [
+                                        source,
+                                        destination,
+                                        volume,
+                                        orig_idx,
+                                        f"pipette_error: {str(e)}",
+                                    ]
+                                )
 
             # Multi-aspirate single dispense
             # Sort the dispense operations based on the source well name
@@ -1146,6 +1422,55 @@ class LiquidHandler:
                 key=lambda x: str(x[0][0]),
             )
             for dispense_set in dispense_sets:
+                # Skip this set if pipette has run out of tips
+                if pipette_name in out_of_tips_pipettes:
+                    # Add all operations in this set to failed operations
+                    for source, destination, volume, orig_idx in dispense_set:
+                        if pipette_name == "p300_multi":
+                            # Recreate the original operations
+                            hidden_source_wells = source.parent.columns()[
+                                int(source.well_name[1:]) - 1
+                            ]
+                            if len(hidden_source_wells) == 1:
+                                hidden_source_wells = hidden_source_wells * 8
+                            hidden_destination_wells = destination.parent.columns()[
+                                int(destination.well_name[1:]) - 1
+                            ]
+                            if len(hidden_destination_wells) == 1:
+                                hidden_destination_wells = hidden_destination_wells * 8
+                            for i in range(8):
+                                original_idx = -1
+                                for op in zip(
+                                    source_wells,
+                                    destination_wells,
+                                    volumes,
+                                    range(len(source_wells)),
+                                ):
+                                    if (
+                                        op[0] == hidden_source_wells[i]
+                                        and op[1] == hidden_destination_wells[i]
+                                        and op[2] == volume
+                                    ):
+                                        original_idx = op[3]
+                                        break
+                                if original_idx not in [o[3] for o in failed_operations]:
+                                    failed_operations.append(
+                                        [
+                                            hidden_source_wells[i],
+                                            hidden_destination_wells[i],
+                                            volume,
+                                            original_idx,
+                                            "out_of_tips",
+                                        ]
+                                    )
+                                allocated_indexes.append(original_idx)
+                        else:
+                            if orig_idx not in [o[3] for o in failed_operations]:
+                                failed_operations.append(
+                                    [source, destination, volume, orig_idx, "out_of_tips"]
+                                )
+                    continue
+
                 # [[[source1, dest, vol1], [source2, dest, vol2]],[[source3, dest, vol3], [source4, dest, vol4]],...]
                 destination_well = dispense_set[0][1]
                 set_volume = sum([op[2] for op in dispense_set])
@@ -1153,52 +1478,215 @@ class LiquidHandler:
                     min(pipette.min_volume * 2, max(0, max_vol - set_volume)) if add_air_gap else 0
                 )
 
-                match new_tip:
-                    case "always" | "on aspiration":
-                        if pipette.has_tip:
-                            pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
-                        pipette.pick_up_tip()
-                    case "once":
-                        if first_round:
+                try:
+                    match new_tip:
+                        case "always" | "on aspiration":
                             if pipette.has_tip:
-                                pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
-                            first_round = False
-                        if not pipette.has_tip:
+                                pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                             pipette.pick_up_tip()
-                    case _:
-                        # Keep the tips already attached, otherwise pick up fresh ones
-                        if not pipette.has_tip:
-                            pipette.pick_up_tip()
-                if air_gap:
-                    pipette.move_to(location=dispense_set[0][0].top(5))
-                    pipette.air_gap(volume=air_gap)
-                for source, dest, volume in dispense_set:
-                    pipette.aspirate(volume=volume, location=source, **kwargs)
-                pipette.dispense(set_volume, destination_well, **kwargs)
-                if pipette.current_volume:
-                    if blow_out_to == "trash":
-                        pipette.blow_out(self.trash)
-                    elif blow_out_to == "source":
-                        logging.warning(
-                            "Ignoring blow-out: 'source' is invalid parameter when there are multiple sources"
-                        )
-                    else:
-                        pipette.blow_out(destination_well.top())
+                        case "once":
+                            if first_round:
+                                if pipette.has_tip:
+                                    pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
+                                first_round = False
+                            if not pipette.has_tip:
+                                pipette.pick_up_tip()
+                        case _:
+                            # Keep the tips already attached, otherwise pick up fresh ones
+                            if not pipette.has_tip:
+                                pipette.pick_up_tip()
+                except OutOfTipsError:
+                    logging.error(
+                        f"Out of tips for {pipette}. Marking all related operations as failed."
+                    )
+                    out_of_tips_pipettes.add(pipette_name)
+                    # Add all operations in this set to failed operations
+                    for source, destination, volume, orig_idx in dispense_set:
+                        if pipette_name == "p300_multi":
+                            # Recreate the original operations
+                            hidden_source_wells = source.parent.columns()[
+                                int(source.well_name[1:]) - 1
+                            ]
+                            if len(hidden_source_wells) == 1:
+                                hidden_source_wells = hidden_source_wells * 8
+                            hidden_destination_wells = destination.parent.columns()[
+                                int(destination.well_name[1:]) - 1
+                            ]
+                            if len(hidden_destination_wells) == 1:
+                                hidden_destination_wells = hidden_destination_wells * 8
+                            for i in range(8):
+                                original_idx = -1
+                                for op in zip(
+                                    source_wells,
+                                    destination_wells,
+                                    volumes,
+                                    range(len(source_wells)),
+                                ):
+                                    if (
+                                        op[0] == hidden_source_wells[i]
+                                        and op[1] == hidden_destination_wells[i]
+                                        and op[2] == volume
+                                    ):
+                                        original_idx = op[3]
+                                        break
+                                if original_idx not in [o[3] for o in failed_operations]:
+                                    failed_operations.append(
+                                        [
+                                            hidden_source_wells[i],
+                                            hidden_destination_wells[i],
+                                            volume,
+                                            original_idx,
+                                            "out_of_tips",
+                                        ]
+                                    )
+                                allocated_indexes.append(original_idx)
+                        else:
+                            if orig_idx not in [o[3] for o in failed_operations]:
+                                failed_operations.append(
+                                    [source, destination, volume, orig_idx, "out_of_tips"]
+                                )
+                    continue
 
-                if mix_after:
-                    if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
-                        logging.warning(
-                            f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
-                        )
-                    else:
-                        pipette.mix(
-                            repetitions=mix_after[0], volume=mix_after[1], location=destination_well
-                        )
+                try:
+                    # Perform aspirations with air gap
+                    if air_gap:
+                        pipette.move_to(location=dispense_set[0][0].top(5))
+                        pipette.air_gap(volume=air_gap)
+                    total_volume = 0
+                    for source, _, volume, idx in dispense_set:
+                        pipette.aspirate(volume=volume, location=source, **kwargs)
+                        if touch_tip:
+                            pipette.touch_tip(v_offset=-1)
+                        total_volume += volume
+
+                    # Perform dispense
+                    pipette.dispense(volume=total_volume, location=destination_well, **kwargs)
+                    if touch_tip:
+                        pipette.touch_tip(v_offset=-1)
+
+                    if mix_after:
+                        if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
+                            logging.warning(
+                                f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
+                            )
+                        else:
+                            pipette.mix(
+                                repetitions=mix_after[0],
+                                volume=mix_after[1],
+                                location=destination_well,
+                            )
+
+                    # Handle remaining volume
+                    if pipette.current_volume:
+                        if blow_out_to == "trash":
+                            pipette.blow_out(self.trash)
+                        elif blow_out_to == "source":
+                            pipette.blow_out(source.top())
+                        elif blow_out_to == "destination":
+                            pipette.blow_out(destination_well.top())
+
+                except Exception as e:
+                    logging.error(f"Error during aspiration/dispense: {str(e)}", exc_info=True)
+                    for source, destination, volume, orig_idx in dispense_set:
+                        if pipette_name == "p300_multi":
+                            # Recreate the original operations
+                            hidden_source_wells = source.parent.columns()[
+                                int(source.well_name[1:]) - 1
+                            ]
+                            if len(hidden_source_wells) == 1:
+                                hidden_source_wells = hidden_source_wells * 8
+                            hidden_destination_wells = destination.parent.columns()[
+                                int(destination.well_name[1:]) - 1
+                            ]
+                            if len(hidden_destination_wells) == 1:
+                                hidden_destination_wells = hidden_destination_wells * 8
+                            for i in range(8):
+                                original_idx = -1
+                                for op in zip(
+                                    source_wells,
+                                    destination_wells,
+                                    volumes,
+                                    range(len(source_wells)),
+                                ):
+                                    if (
+                                        op[0] == hidden_source_wells[i]
+                                        and op[1] == hidden_destination_wells[i]
+                                        and op[2] == volume
+                                    ):
+                                        original_idx = op[3]
+                                        break
+                                if original_idx not in [o[3] for o in failed_operations]:
+                                    failed_operations.append(
+                                        [
+                                            hidden_source_wells[i],
+                                            hidden_destination_wells[i],
+                                            volume,
+                                            original_idx,
+                                            f"pipette_error: {str(e)}",
+                                        ]
+                                    )
+                                allocated_indexes.append(original_idx)
+                        else:
+                            if orig_idx not in [o[3] for o in failed_operations]:
+                                failed_operations.append(
+                                    [
+                                        source,
+                                        destination,
+                                        volume,
+                                        orig_idx,
+                                        f"pipette_error: {str(e)}",
+                                    ]
+                                )
 
             # Simple aspirate and dispense
-            # Sort the dispense operations based on the source well name
+            # Sort the orphan operations based on the source well name
             orphan_operations = sorted(orphan_operations, key=lambda x: str(x[0]))
-            for source_well, destination_well, volume in orphan_operations:
+            for source, destination, volume, orig_idx in orphan_operations:
+                # Skip this operation if pipette has run out of tips
+                if pipette_name in out_of_tips_pipettes:
+                    if pipette_name == "p300_multi":
+                        # Recreate the original operations
+                        hidden_source_wells = source.parent.columns()[int(source.well_name[1:]) - 1]
+                        if len(hidden_source_wells) == 1:
+                            hidden_source_wells = hidden_source_wells * 8
+                        hidden_destination_wells = destination.parent.columns()[
+                            int(destination.well_name[1:]) - 1
+                        ]
+                        if len(hidden_destination_wells) == 1:
+                            hidden_destination_wells = hidden_destination_wells * 8
+                        for i in range(8):
+                            original_idx = -1
+                            for op in zip(
+                                source_wells,
+                                destination_wells,
+                                volumes,
+                                range(len(source_wells)),
+                            ):
+                                if (
+                                    op[0] == hidden_source_wells[i]
+                                    and op[1] == hidden_destination_wells[i]
+                                    and op[2] == volume
+                                ):
+                                    original_idx = op[3]
+                                    break
+                            if original_idx not in [o[3] for o in failed_operations]:
+                                failed_operations.append(
+                                    [
+                                        hidden_source_wells[i],
+                                        hidden_destination_wells[i],
+                                        volume,
+                                        original_idx,
+                                        "out_of_tips",
+                                    ]
+                                )
+                            allocated_indexes.append(original_idx)
+                    else:
+                        if orig_idx not in [o[3] for o in failed_operations]:
+                            failed_operations.append(
+                                [source, destination, volume, orig_idx, "out_of_tips"]
+                            )
+                    continue
+
                 extra_volume = (
                     min(pipette.min_volume, max(0, max_vol - volume)) if overhead_liquid else 0
                 )
@@ -1208,61 +1696,174 @@ class LiquidHandler:
                     else 0
                 )
 
-                match new_tip:
-                    case "always" | "on aspiration":
-                        if pipette.has_tip:
-                            pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
-                        pipette.pick_up_tip()
-                    case "once":
-                        if first_round:
+                try:
+                    match new_tip:
+                        case "always" | "on aspiration":
                             if pipette.has_tip:
-                                pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
-                            first_round = False
-                        if not pipette.has_tip:
+                                pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                             pipette.pick_up_tip()
-                    case _:
-                        # Keep the tips already attached, otherwise pick up fresh ones
-                        if not pipette.has_tip:
-                            pipette.pick_up_tip()
-                if air_gap:
-                    pipette.move_to(location=source_well.top(5))
-                    pipette.air_gap(volume=air_gap)
-                pipette.aspirate(volume=volume, location=source_well, **kwargs)
-                pipette.dispense(volume, destination_well, **kwargs)
-
-                if pipette.current_volume:
-                    if blow_out_to == "trash":
-                        pipette.blow_out(self.trash)
-                    elif blow_out_to == "source":
-                        pipette.blow_out(source_well.top())
-                    elif blow_out_to == "destination":
-                        pipette.blow_out(destination_well.top())
+                        case "once":
+                            if first_round:
+                                if pipette.has_tip:
+                                    pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
+                                first_round = False
+                            if not pipette.has_tip:
+                                pipette.pick_up_tip()
+                        case _:
+                            # Keep the tips already attached, otherwise pick up fresh ones
+                            if not pipette.has_tip:
+                                pipette.pick_up_tip()
+                except OutOfTipsError:
+                    logging.error(
+                        f"Out of tips for {pipette}. Marking all related operations as failed."
+                    )
+                    out_of_tips_pipettes.add(pipette_name)
+                    if pipette_name == "p300_multi":
+                        # Recreate the original operations
+                        hidden_source_wells = source.parent.columns()[int(source.well_name[1:]) - 1]
+                        if len(hidden_source_wells) == 1:
+                            hidden_source_wells = hidden_source_wells * 8
+                        hidden_destination_wells = destination.parent.columns()[
+                            int(destination.well_name[1:]) - 1
+                        ]
+                        if len(hidden_destination_wells) == 1:
+                            hidden_destination_wells = hidden_destination_wells * 8
+                        for i in range(8):
+                            original_idx = -1
+                            for op in zip(
+                                source_wells,
+                                destination_wells,
+                                volumes,
+                                range(len(source_wells)),
+                            ):
+                                if (
+                                    op[0] == hidden_source_wells[i]
+                                    and op[1] == hidden_destination_wells[i]
+                                    and op[2] == volume
+                                ):
+                                    original_idx = op[3]
+                                    break
+                            if original_idx not in [o[3] for o in failed_operations]:
+                                failed_operations.append(
+                                    [
+                                        hidden_source_wells[i],
+                                        hidden_destination_wells[i],
+                                        volume,
+                                        original_idx,
+                                        "out_of_tips",
+                                    ]
+                                )
+                            allocated_indexes.append(original_idx)
                     else:
-                        raise Exception(
-                            "There is leftover volume in the pipette, while blow out is not enabled."
-                        )
+                        if orig_idx not in [o[3] for o in failed_operations]:
+                            failed_operations.append(
+                                [source, destination, volume, orig_idx, "out_of_tips"]
+                            )
+                    continue
 
-                if mix_after:
-                    if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
-                        logging.warning(
-                            f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
-                        )
+                try:
+                    # Perform aspiration with air gap
+                    if air_gap:
+                        pipette.move_to(location=source.top(5))
+                        pipette.air_gap(volume=air_gap)
+                    pipette.aspirate(volume=volume + extra_volume, location=source, **kwargs)
+                    if touch_tip:
+                        pipette.touch_tip(v_offset=-1)
+
+                    # Perform dispense
+                    pipette.dispense(volume=volume, location=destination, **kwargs)
+                    if touch_tip:
+                        pipette.touch_tip(v_offset=-1)
+
+                    if mix_after:
+                        if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
+                            logging.warning(
+                                f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
+                            )
+                        else:
+                            pipette.mix(
+                                repetitions=mix_after[0],
+                                volume=mix_after[1],
+                                location=destination,
+                            )
+
+                    # Handle remaining volume
+                    if pipette.current_volume:
+                        if blow_out_to == "trash":
+                            pipette.blow_out(self.trash)
+                        elif blow_out_to == "source":
+                            pipette.blow_out(source.top())
+                        elif blow_out_to == "destination":
+                            pipette.blow_out(destination.top())
+
+                except Exception as e:
+                    logging.error(f"Error during aspiration/dispense: {str(e)}")
+                    if pipette_name == "p300_multi":
+                        # Recreate the original operations
+                        hidden_source_wells = source.parent.columns()[int(source.well_name[1:]) - 1]
+                        if len(hidden_source_wells) == 1:
+                            hidden_source_wells = hidden_source_wells * 8
+                        hidden_destination_wells = destination.parent.columns()[
+                            int(destination.well_name[1:]) - 1
+                        ]
+                        if len(hidden_destination_wells) == 1:
+                            hidden_destination_wells = hidden_destination_wells * 8
+                        for i in range(8):
+                            original_idx = -1
+                            for op in zip(
+                                source_wells,
+                                destination_wells,
+                                volumes,
+                                range(len(source_wells)),
+                            ):
+                                if (
+                                    op[0] == hidden_source_wells[i]
+                                    and op[1] == hidden_destination_wells[i]
+                                    and op[2] == volume
+                                ):
+                                    original_idx = op[3]
+                                    break
+                            if original_idx not in [o[3] for o in failed_operations]:
+                                failed_operations.append(
+                                    [
+                                        hidden_source_wells[i],
+                                        hidden_destination_wells[i],
+                                        volume,
+                                        original_idx,
+                                        f"pipette_error: {str(e)}",
+                                    ]
+                                )
+                            allocated_indexes.append(original_idx)
                     else:
-                        pipette.mix(
-                            repetitions=mix_after[0], volume=mix_after[1], location=destination_well
-                        )
+                        if orig_idx not in [o[3] for o in failed_operations]:
+                            failed_operations.append(
+                                [
+                                    source,
+                                    destination,
+                                    volume,
+                                    orig_idx,
+                                    f"pipette_error: {str(e)}",
+                                ]
+                            )
 
             # All liquid handling is done
-            if single_tip_mode:
-                self._set_single_tip_mode(False)
+            try:
+                if single_tip_mode:
+                    self._set_single_tip_mode(False)
+            except Exception as e:
+                logging.error(f"Error resetting single tip mode: {str(e)}")
 
-        if pipette.has_tip:
-            if new_tip != "never":
-                if trash_tips:
-                    pipette.drop_tip()
-                else:
-                    pipette.return_tip()
+        if pipette_name not in out_of_tips_pipettes and pipette.has_tip:
+            try:
+                if new_tip != "never":
+                    if trash_tips:
+                        pipette.drop_tip()
+                    else:
+                        pipette.return_tip()
+            except Exception as e:
+                logging.error(f"Error dropping/returning tip: {str(e)}")
 
+        failed_operations.sort(key=lambda x: x[3])
         return failed_operations
 
     def distribute(
@@ -1294,7 +1895,7 @@ class LiquidHandler:
             destination_wells (list of Well): The wells to which the liquid will be distributed.
             new_tip (str, optional): When to use a new tip. Options are: "always", "once", "never", "on aspiration". Default is "once".
             touch_tip (bool, optional): Whether to touch the tip to the side of the well after dispensing. Default is False.
-            blow_out_to (bool or str, optional): Whether the remainder of liquid is blown out to "source", "destination" or "trash". False will result in no blow-out.
+            blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination" or "trash". Empty string will result in no blow-out.
             trash_tips (bool, optional): Whether to discard the tip to the trash after use (True) or return to tip box (False). Default is True.
             add_air_gap (bool, optional): Whether to add an air gap before aspirating the liquid. Default is True.
             overhead_liquid (bool, optional): Whether to aspirate extra liquid for more accurate dispensing, but consumes more source liquid. Default is True.
@@ -1334,10 +1935,10 @@ class LiquidHandler:
         if new_tip not in ["always", "once", "never", "on aspiration"]:
             raise ValueError(f"Got an invalid value for the optional argument 'new_tip': {new_tip}")
 
-        if blow_out_to is False and new_tip in ["on aspiration", "always"]:
-            msg = "blow_out_to should be set to True when new_tip is 'on aspiration' or 'always'. Setting to True."
+        if blow_out_to == "" and new_tip in ["on aspiration", "always"]:
+            msg = "blow_out_to should be set when new_tip is 'on aspiration' or 'always'. Setting to 'trash'."
             logging.warning(msg)
-            blow_out_to = True
+            blow_out_to = "trash"
 
         if isinstance(volumes, float) or isinstance(volumes, int):
             volumes = [volumes] * len(destination_wells)
@@ -1385,14 +1986,14 @@ class LiquidHandler:
         """
         # Checking and reformatting parameters
         if isinstance(destination_well, list):
-            if len(destination_well) >= 1:
+            if len(destination_well) != 1:
                 raise TypeError(
                     f"The destination well must be a Well object or a list of a single Well, got {type(destination_well)}."
                 )
             destination_well = destination_well[0]
         if not isinstance(destination_well, Well) and not isinstance(destination_well, TrashBin):
             raise TypeError(
-                f"The destination well must be a Well object, TashBin or a list of a single Well, got {type(destination_well)}."
+                f"The destination well must be a Well object, TrashBin or a list of a single Well, got {type(destination_well)}."
             )
 
         if isinstance(source_wells, Well):
@@ -1403,6 +2004,10 @@ class LiquidHandler:
 
         if isinstance(volumes, (float, int)):
             volumes = [volumes] * (len(source_wells) if isinstance(source_wells, list) else 1)
+
+        if "overhead_liquid" in kwargs:
+            logging.warning("overhead_liquid is not supported for pool, ignoring")
+            del kwargs["overhead_liquid"]
 
         source_wells = source_wells if isinstance(source_wells, list) else [source_wells]
 
@@ -1434,7 +2039,7 @@ class LiquidHandler:
         sample_count: int = 0,
         new_tip: str = "always",
         touch_tip: bool = False,
-        blow_out_to: bool = "destination",
+        blow_out_to: str = "destination",
         trash_tips: bool = True,
         add_air_gap: bool = True,
         overhead_liquid: bool = False,
@@ -1452,7 +2057,7 @@ class LiquidHandler:
             sample_count (int, optional): The number of samples to stamp. Defaults to 0, which stamps all samples.
             new_tip (str, optional): Strategy for using tips. Options are "always", "once", "never", "on aspiration". Default is "always".
             touch_tip (bool, optional): Whether to touch the tip to the side of the well after dispensing. Default is False.
-            blow_out_to (bool or str, optional): Whether the remainder of liquid is blown out to "source", "destination" or "trash". False will result in no blow-out.
+            blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination" or "trash". Empty string will result in no blow-out.
             trash_tips (bool, optional): Whether to discard tips after use. Default is True.
             add_air_gap (bool, optional): Whether to add an air gap prior to aspiration. Default is True.
             overhead_liquid (bool, optional): Whether to aspirate extra liquid for more accurate dispensing. Default is False.

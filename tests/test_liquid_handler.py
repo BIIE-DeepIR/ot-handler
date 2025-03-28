@@ -460,7 +460,7 @@ class TestLiquidHandlerTransfer(unittest.TestCase):
     def test_transfer_multi_aspirate_with_mix_after(self):
         # Arrange
         volume = 50
-        mix_after = (3, 20)  # 3 repetitions of 20µL each
+        mix_after = (3, 21)  # 3 repetitions of 21µL each
         test_labware = self.lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", 3, "test")
 
         # Act
@@ -508,6 +508,16 @@ class TestLiquidHandlerTransfer(unittest.TestCase):
             self.mock_labware[w] for w in ["A1", "A2", "B1", "B2", "A3", "C1", "D1", "F5"]
         ]
 
+        # Mock the p20 dispense method to collect call arguments
+        original_dispense = self.lh.p20.dispense
+        dispense_calls = []
+
+        def mock_dispense(volume, location, **kwargs):
+            dispense_calls.append((volume, location))
+            return original_dispense(volume, location, **kwargs)
+
+        self.lh.p20.dispense = mock_dispense
+
         self.lh.transfer(
             volumes=volumes,
             source_wells=[source_well] * 8,
@@ -518,11 +528,8 @@ class TestLiquidHandlerTransfer(unittest.TestCase):
         )
 
         # Check number of calls
-        self.assertEqual(self.lh.p20.dispense.call_count, 8)
+        self.assertEqual(len(dispense_calls), 8)
         self.assertEqual(self.lh.p300_multi.dispense.call_count, 0)
-
-        # Get all dispense calls in order
-        dispense_calls = self.lh.p20.dispense.call_args_list
 
         # Check each dispense operation matches expected volume and well
         expected_operations = sorted(
@@ -530,16 +537,20 @@ class TestLiquidHandlerTransfer(unittest.TestCase):
         )
 
         for (volume, well), call in zip(expected_operations, dispense_calls):
-            call_args, call_kwargs = call
+            call_vol, call_well = call  # Unpack our collected call args
+
             self.assertEqual(
-                call_args[1],
+                call_well,
                 well,
-                f"Was expecting {well.well_name} but got {call_args[1].well_name}",
+                f"Was expecting {well.well_name} but got {call_well.well_name}",
             )
-            self.assertEqual(call_args[0], volume, f"Was expecting {volume} but got {call_args[0]}")
+            self.assertEqual(call_vol, volume, f"Was expecting {volume} but got {call_vol}")
 
         # Verify pick_up_tip and drop_tip were called for each operation (new_tip="always")
         self.assertEqual(self.lh.p20.pick_up_tip.call_count, 8)
+
+        # Reset the mock for future tests
+        self.lh.p20.dispense = original_dispense
 
 
 class TestLiquidHandlerAllocate(unittest.TestCase):
@@ -902,7 +913,7 @@ class TestLiquidHandlerPool(unittest.TestCase):
             source_wells=self.mock_labware.wells(),  # 96x
             destination_well=self.mock_reservoir.wells()[0],
             add_air_gap=True,
-            new_tip="once",
+            new_tip="always",
         )
 
         # Assert
@@ -982,7 +993,7 @@ class TestLiquidHandlerPool(unittest.TestCase):
 
     def test_pool_with_large_volume(self):
         # Arrange
-        volume = 100  # Exceeds p20.max_volume, should use p300_multi
+        volume = 80  # Exceeds p20.max_volume, should use p300_multi
 
         # Act
         self.lh.pool(
@@ -1007,7 +1018,7 @@ class TestLiquidHandlerPool(unittest.TestCase):
             volumes=volume,
             source_wells=self.mock_labware.wells(),
             destination_well=self.mock_reservoir.wells()[0],
-            new_tip="once",
+            new_tip="always",
         )
 
         # Assert
@@ -1161,22 +1172,235 @@ class TestLoadDefaultLabware(unittest.TestCase):
         pcr_plate = self.lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", 9)
         reservoir = self.lh.load_labware("nest_12_reservoir_15ml", 2)
         self.lh.p300_multi.dispense = MagicMock()
-        with self.assertRaises(OutOfTipsError) as _:
-            self.lh.transfer(
-                volumes=[50] * 96,
-                source_wells=[reservoir.wells()[0]] * 96,
-                destination_wells=pcr_plate.wells(),
-            )
 
+        # Test that operations fail when no tips are available
+        volumes = [50] * 96
+        source_wells = [reservoir.wells()[0]] * 96
+        destination_wells = pcr_plate.wells()
+        ops = list(zip(source_wells, destination_wells, volumes, range(96)))
+        failed_ops = self.lh.transfer(
+            volumes=volumes,
+            source_wells=source_wells,
+            destination_wells=destination_wells,
+            new_tip="always",
+            touch_tip=False,
+            trash_tips=True,
+            add_air_gap=False,
+            overhead_liquid=0,
+        )
+
+        # Verify failed operations are reported correctly
+        self.assertEqual(len(failed_ops), len(list(ops)))
+        for i, (source, dest, volume, idx, reason) in enumerate(failed_ops):
+            self.assertEqual(source, ops[i][0])
+            self.assertEqual(dest, ops[i][1])
+            self.assertEqual(volume, ops[i][2])
+            self.assertEqual(idx, ops[i][3])
+            self.assertEqual(reason, "out_of_tips")
+
+        # Load tips and verify operations succeed
         self.lh.load_tips("opentrons_96_tiprack_300ul", 7, single_channel=False)
         self.lh.load_tips("opentrons_96_tiprack_300ul", 6, single_channel=True)
 
-        self.lh.transfer(
+        failed_ops = self.lh.transfer(
             volumes=[50] * 96,
             source_wells=[reservoir.wells()[0]] * 96,
             destination_wells=pcr_plate.wells(),
         )
+
+        # Verify no operations failed
+        self.assertEqual(len(failed_ops), 0)
         self.assertEqual(self.lh.p300_multi.dispense.call_count, 12)
+
+
+class TestFailedOperationsReporting(unittest.TestCase):
+    def setUp(self):
+        self.lh = LiquidHandler(simulation=True, load_default=False)
+        self.lh.load_tips("opentrons_96_tiprack_300ul", "7", single_channel=False)
+        self.lh.load_tips("opentrons_96_tiprack_300ul", "6", single_channel=True)
+        self.lh.load_tips("opentrons_96_tiprack_20ul", "11", single_channel=True)
+
+        # Mock pipettes
+        self.lh.p300_multi = MagicMock()
+        self.lh.p20 = MagicMock()
+        self.lh.p20.min_volume = 1
+        self.lh.p20.max_volume = 20
+        self.lh.p300_multi.min_volume = 20
+        self.lh.p300_multi.max_volume = 300
+
+        # Mock labware
+        self.source_plate = self.lh.load_labware(
+            "nest_96_wellplate_100ul_pcr_full_skirt", 9, "source plate"
+        )
+        self.dest_plate = self.lh.load_labware(
+            "nest_96_wellplate_100ul_pcr_full_skirt", 3, "destination plate"
+        )
+
+    def test_volume_too_low_reporting(self):
+        # Test that operations with volumes below minimum are reported correctly
+        volumes = [0.5, 25, 0.8, 30]  # 0.5 and 0.8 are below minimum
+        source_wells = self.source_plate.wells()[:4]
+        dest_wells = self.dest_plate.wells()[:4]
+
+        failed_ops = self.lh.transfer(
+            volumes=volumes,
+            source_wells=source_wells,
+            destination_wells=dest_wells,
+        )
+
+        # Verify failed operations
+        self.assertEqual(len(failed_ops), 2)
+        self.assertEqual(failed_ops[0][0], source_wells[0])  # source
+        self.assertEqual(failed_ops[0][1], dest_wells[0])  # destination
+        self.assertEqual(failed_ops[0][2], 0.5)  # volume
+        self.assertEqual(failed_ops[0][3], 0)  # index
+        self.assertEqual(failed_ops[0][4], "volume_too_low")  # reason
+
+        self.assertEqual(failed_ops[1][0], source_wells[2])
+        self.assertEqual(failed_ops[1][1], dest_wells[2])
+        self.assertEqual(failed_ops[1][2], 0.8)
+        self.assertEqual(failed_ops[1][3], 2)
+        self.assertEqual(failed_ops[1][4], "volume_too_low")
+
+    def test_out_of_tips_reporting(self):
+        lh = LiquidHandler(simulation=True, load_default=False)
+
+        # Mock labware
+        source_plate = lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", 9, "source plate")
+        dest_plate = lh.load_labware(
+            "nest_96_wellplate_100ul_pcr_full_skirt", 3, "destination plate"
+        )
+
+        volumes = [25, 30, 15, 10]
+        source_wells = source_plate.wells()[:4]
+        dest_wells = dest_plate.wells()[:4]
+
+        failed_ops = lh.transfer(
+            volumes=volumes,
+            source_wells=source_wells,
+            destination_wells=dest_wells,
+        )
+
+        # Verify all operations failed due to out of tips
+        self.assertEqual(len(failed_ops), 4)
+        for i, (source, dest, volume, idx, reason) in enumerate(failed_ops):
+            self.assertEqual(source, source_wells[i])
+            self.assertEqual(dest, dest_wells[i])
+            self.assertEqual(volume, volumes[i])
+            self.assertEqual(idx, i)
+            self.assertEqual(reason, "out_of_tips")
+
+    def test_mixed_failure_reporting(self):
+        # Test scenario with both volume too low and out of tips failures
+        lh = LiquidHandler(simulation=True, load_default=False)
+        source_plate = lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", 9, "source plate")
+        dest_plate = lh.load_labware(
+            "nest_96_wellplate_100ul_pcr_full_skirt", 3, "destination plate"
+        )
+
+        volumes = [0.5, 25, 0.8, 30]  # 0.5 and 0.8 are below minimum
+        source_wells = source_plate.wells()[:4]
+        dest_wells = dest_plate.wells()[:4]
+
+        failed_ops = lh.transfer(
+            volumes=volumes,
+            source_wells=source_wells,
+            destination_wells=dest_wells,
+        )
+
+        # Verify all operations failed with correct reasons
+        self.assertEqual(len(failed_ops), 4)
+
+        # First operation: volume too low
+        self.assertEqual(failed_ops[0][2], 0.5)
+        self.assertEqual(failed_ops[0][3], 0)
+        self.assertEqual(failed_ops[0][4], "volume_too_low")
+
+        # Second operation: out of tips
+        self.assertEqual(failed_ops[1][2], 25)
+        self.assertEqual(failed_ops[1][3], 1)
+        self.assertEqual(failed_ops[1][4], "out_of_tips")
+
+        # Third operation: volume too low
+        self.assertEqual(failed_ops[2][2], 0.8)
+        self.assertEqual(failed_ops[2][3], 2)
+        self.assertEqual(failed_ops[2][4], "volume_too_low")
+
+        # Fourth operation: out of tips
+        self.assertEqual(failed_ops[3][2], 30)
+        self.assertEqual(failed_ops[3][3], 3)
+        self.assertEqual(failed_ops[3][4], "out_of_tips")
+
+    def test_pipette_error_reporting(self):
+        # Mock a pipette error during operation
+        def raise_error(*args, **kwargs):
+            raise Exception("Pipette malfunction")
+
+        self.lh.p300_multi.aspirate.side_effect = raise_error
+        self.lh.p20.aspirate.side_effect = raise_error
+
+        volumes = [25, 30]
+        source_wells = self.source_plate.wells()[:2]
+        dest_wells = self.dest_plate.wells()[:2]
+
+        failed_ops = self.lh.transfer(
+            volumes=volumes,
+            source_wells=source_wells,
+            destination_wells=dest_wells,
+        )
+
+        # Verify operations failed with pipette error
+        self.assertEqual(len(failed_ops), 2)
+        for i, (source, dest, volume, idx, reason) in enumerate(failed_ops):
+            self.assertEqual(source, source_wells[i])
+            self.assertEqual(dest, dest_wells[i])
+            self.assertEqual(volume, volumes[i])
+            self.assertEqual(idx, i)
+            self.assertEqual(reason, "pipette_error: Pipette malfunction")
+
+    def test_failed_operations_in_distribute(self):
+        # Test failed operations reporting in distribute method
+
+        volumes = [0.5, 25, 0.8, 30]  # Mix of valid and invalid volumes
+        source_well = self.source_plate.wells()[0]
+        dest_wells = self.dest_plate.wells()[:4]
+
+        failed_ops = self.lh.distribute(
+            volumes=volumes,
+            source_well=source_well,
+            destination_wells=dest_wells,
+        )
+
+        # Verify failed operations
+        self.assertEqual(len(failed_ops), 2)
+
+        # Check volume too low failures
+        volume_too_low = [op for op in failed_ops if op[4] == "volume_too_low"]
+        self.assertEqual(len(volume_too_low), 2)
+        self.assertEqual(volume_too_low[0][2], 0.5)
+        self.assertEqual(volume_too_low[1][2], 0.8)
+
+    def test_failed_operations_in_pool(self):
+        # Test failed operations reporting in pool method
+
+        volumes = [0.5, 25, 0.8, 30]  # Mix of valid and invalid volumes
+        source_wells = self.source_plate.wells()[:4]
+        dest_well = self.dest_plate.wells()[0]
+
+        failed_ops = self.lh.pool(
+            volumes=volumes,
+            source_wells=source_wells,
+            destination_well=dest_well,
+        )
+
+        # Verify failed operations
+        self.assertEqual(len(failed_ops), 2)
+
+        # Check volume too low failures
+        volume_too_low = [op for op in failed_ops if op[4] == "volume_too_low"]
+        self.assertEqual(len(volume_too_low), 2)
+        self.assertEqual(volume_too_low[0][2], 0.5)
+        self.assertEqual(volume_too_low[1][2], 0.8)
 
 
 class TestDeckLayout(unittest.TestCase):
