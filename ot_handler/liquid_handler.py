@@ -974,6 +974,53 @@ class LiquidHandler:
         if done:
             return failed_operations
 
+        def add_failed_pipette_operations(
+            pipette_name: str, orig_idx: int, failed_operations: list, failure_reason: str
+        ):
+            added_indexes = []
+            if pipette_name == "p300_multi":
+                # Recreate the original operations
+                hidden_source_wells = source.parent.columns()[int(source.well_name[1:]) - 1]
+                if len(hidden_source_wells) == 1:
+                    hidden_source_wells = hidden_source_wells * 8
+
+                hidden_destination_wells = destination.parent.columns()[
+                    int(destination.well_name[1:]) - 1
+                ]
+                if len(hidden_destination_wells) == 1:
+                    hidden_destination_wells = hidden_destination_wells * 8
+
+                for i in range(8):
+                    original_idx = -1
+                    for op in zip(
+                        source_wells, destination_wells, volumes, range(len(source_wells))
+                    ):
+                        if (
+                            op[0] == hidden_source_wells[i]
+                            and op[1] == hidden_destination_wells[i]
+                            and op[2] == volume
+                        ):
+                            original_idx = op[3]
+                            break
+                    if original_idx not in [o[3] for o in failed_operations]:
+                        failed_operations.append(
+                            [
+                                hidden_source_wells[i],
+                                hidden_destination_wells[i],
+                                volume,
+                                original_idx,
+                                failure_reason,
+                            ]
+                        )
+                        added_indexes.append(original_idx)
+            else:
+                if orig_idx not in [o[3] for o in failed_operations]:
+                    failed_operations.append(
+                        [source, destination, volume, orig_idx, failure_reason]
+                    )
+                    added_indexes.append(orig_idx)
+            return added_indexes, failed_operations
+
         # Allocate the liquid handling operations to each available pipette configuration
         # Format: [index, source well, destination well, volume]
         p300_multi_steps, p300_single_steps, p20_steps = self._allocate_liquid_handling_steps(
@@ -998,50 +1045,10 @@ class LiquidHandler:
                 # Add all operations from this pipette to failed operations
                 for idx, source, destination, volume in steps:
                     if idx not in allocated_indexes:
-                        if pipette_name == "p300_multi":
-                            # Recreate the original operations
-                            hidden_source_wells = source.parent.columns()[
-                                int(source.well_name[1:]) - 1
-                            ]
-                            if len(hidden_source_wells) == 1:
-                                hidden_source_wells = hidden_source_wells * 8
-                            hidden_destination_wells = destination.parent.columns()[
-                                int(destination.well_name[1:]) - 1
-                            ]
-                            if len(hidden_destination_wells) == 1:
-                                hidden_destination_wells = hidden_destination_wells * 8
-                            for i in range(8):
-                                original_idx = -1
-                                for op in zip(
-                                    source_wells,
-                                    destination_wells,
-                                    volumes,
-                                    range(len(source_wells)),
-                                ):
-                                    if (
-                                        op[0] == hidden_source_wells[i]
-                                        and op[1] == hidden_destination_wells[i]
-                                        and op[2] == volume
-                                    ):
-                                        original_idx = op[3]
-                                        break
-                                if original_idx not in [o[3] for o in failed_operations]:
-                                    failed_operations.append(
-                                        [
-                                            hidden_source_wells[i],
-                                            hidden_destination_wells[i],
-                                            volume,
-                                            original_idx,
-                                            "out_of_tips",
-                                        ]
-                                    )
-                                allocated_indexes.append(original_idx)
-                        else:
-                            if idx not in [o[3] for o in failed_operations]:
-                                failed_operations.append(
-                                    [source, destination, volume, idx, "out_of_tips"]
-                                )
-                            allocated_indexes.append(idx)
+                        idxs, failed_operations = add_failed_pipette_operations(
+                            pipette_name, idx, failed_operations, "out_of_tips"
+                        )
+                        allocated_indexes.extend(idxs)
                 continue
 
             max_vol = min(self.max_volume, pipette.max_volume)
@@ -1067,48 +1074,10 @@ class LiquidHandler:
                                 logging.warning(
                                     f"Volume too low, requested operation ignored: dispense {volume} ul to {destination} with pipette {pipette}"
                                 )
-                                if pipette_name == "p300_multi":
-                                    # Recreate the original operations
-                                    hidden_source_wells = source.parent.columns()[
-                                        int(source.well_name[1:]) - 1
-                                    ]
-                                    if len(hidden_source_wells) == 1:
-                                        hidden_source_wells = hidden_source_wells * 8
-                                    hidden_destination_wells = destination.parent.columns()[
-                                        int(destination.well_name[1:]) - 1
-                                    ]
-                                    if len(hidden_destination_wells) == 1:
-                                        hidden_destination_wells = hidden_destination_wells * 8
-                                    for i in range(len(source_wells)):
-                                        for op in zip(
-                                            source_wells,
-                                            destination_wells,
-                                            volumes,
-                                            range(len(source_wells)),
-                                        ):
-                                            if (
-                                                op[0] == hidden_source_wells[i]
-                                                and op[1] == hidden_destination_wells[i]
-                                                and op[2] == volume
-                                            ):
-                                                original_idx = op[3]
-                                                break
-                                        if original_idx not in [o[3] for o in failed_operations]:
-                                            failed_operations.append(
-                                                [
-                                                    hidden_source_wells[i],
-                                                    hidden_destination_wells[i],
-                                                    volume,
-                                                    original_idx,
-                                                    "volume_too_low",
-                                                ]
-                                            )
-                                        allocated_indexes.append(original_idx)
-                                else:
-                                    if idx not in [o[3] for o in failed_operations]:
-                                        failed_operations.append(
-                                            [source, destination, volume, idx, "volume_too_low"]
-                                        )
+                                idxs, failed_operations = add_failed_pipette_operations(
+                                    pipette_name, idx, failed_operations, "volume_too_low"
+                                )
+                                allocated_indexes.extend(idxs)
                                 continue
                             # No multi-dispense if tip change is set as "always", no-multi aspiration if if tip change set as "always" or "on aspiration"
                             if (
@@ -1158,10 +1127,11 @@ class LiquidHandler:
                         logging.warning(
                             f"Volume too low, requested operation ignored: dispense {volume} ul to {destination} with pipette {pipette}"
                         )
-                        if idx not in [o[3] for o in failed_operations]:
-                            failed_operations.append(
-                                [source, destination, volume, idx, "volume_too_low"]
-                            )
+                        idxs, failed_operations = add_failed_pipette_operations(
+                            pipette_name, idx, failed_operations, "volume_too_low"
+                        )
+                        allocated_indexes.extend(idxs)
+
             first_round = True
             if single_tip_mode and steps:
                 self._set_single_tip_mode(True)
@@ -1191,49 +1161,10 @@ class LiquidHandler:
                 if pipette_name in out_of_tips_pipettes:
                     # Add all operations in this set to failed operations
                     for source, destination, volume, orig_idx in aspiration_set:
-                        if pipette_name == "p300_multi":
-                            # Recreate the original operations
-                            hidden_source_wells = source.parent.columns()[
-                                int(source.well_name[1:]) - 1
-                            ]
-                            if len(hidden_source_wells) == 1:
-                                hidden_source_wells = hidden_source_wells * 8
-                            hidden_destination_wells = destination.parent.columns()[
-                                int(destination.well_name[1:]) - 1
-                            ]
-                            if len(hidden_destination_wells) == 1:
-                                hidden_destination_wells = hidden_destination_wells * 8
-                            for i in range(8):
-                                original_idx = -1
-                                for op in zip(
-                                    source_wells,
-                                    destination_wells,
-                                    volumes,
-                                    range(len(source_wells)),
-                                ):
-                                    if (
-                                        op[0] == hidden_source_wells[i]
-                                        and op[1] == hidden_destination_wells[i]
-                                        and op[2] == volume
-                                    ):
-                                        original_idx = op[3]
-                                        break
-                                if original_idx not in [o[3] for o in failed_operations]:
-                                    failed_operations.append(
-                                        [
-                                            hidden_source_wells[i],
-                                            hidden_destination_wells[i],
-                                            volume,
-                                            original_idx,
-                                            "out_of_tips",
-                                        ]
-                                    )
-                                allocated_indexes.append(original_idx)
-                        else:
-                            if orig_idx not in [o[3] for o in failed_operations]:
-                                failed_operations.append(
-                                    [source, destination, volume, orig_idx, "out_of_tips"]
-                                )
+                        idxs, failed_operations = add_failed_pipette_operations(
+                            pipette_name, orig_idx, failed_operations, "out_of_tips"
+                        )
+                        allocated_indexes.extend(idxs)
                     continue
 
                 # [[[source, dest, vol], [source, dest, vol]],[[source, dest2, vol2], [source, dest2, vol2]],...]
@@ -1272,48 +1203,10 @@ class LiquidHandler:
                     out_of_tips_pipettes.add(pipette_name)
                     # Add all operations in this set to failed operations
                     for source, destination, volume, orig_idx in aspiration_set:
-                        if pipette_name == "p300_multi":
-                            # Recreate the original operations
-                            hidden_source_wells = source.parent.columns()[
-                                int(source.well_name[1:]) - 1
-                            ]
-                            if len(hidden_source_wells) == 1:
-                                hidden_source_wells = hidden_source_wells * 8
-                            hidden_destination_wells = destination.parent.columns()[
-                                int(destination.well_name[1:]) - 1
-                            ]
-                            if len(hidden_destination_wells) == 1:
-                                hidden_destination_wells = hidden_destination_wells * 8
-                            for i in range(8):
-                                original_idx = -1
-                                for op in zip(
-                                    source_wells,
-                                    destination_wells,
-                                    volumes,
-                                    range(len(source_wells)),
-                                ):
-                                    if (
-                                        op[0] == hidden_source_wells[i]
-                                        and op[1] == hidden_destination_wells[i]
-                                        and op[2] == volume
-                                    ):
-                                        original_idx = op[3]
-                                        break
-                                if original_idx not in [o[3] for o in failed_operations]:
-                                    failed_operations.append(
-                                        [
-                                            hidden_source_wells[i],
-                                            hidden_destination_wells[i],
-                                            volume,
-                                            original_idx,
-                                            "out_of_tips",
-                                        ]
-                                    )
-                        else:
-                            if orig_idx not in [o[3] for o in failed_operations]:
-                                failed_operations.append(
-                                    [source, destination, volume, orig_idx, "out_of_tips"]
-                                )
+                        idxs, failed_operations = add_failed_pipette_operations(
+                            pipette_name, orig_idx, failed_operations, "out_of_tips"
+                        )
+                        allocated_indexes.extend(idxs)
                     continue
 
                 try:
@@ -1365,55 +1258,11 @@ class LiquidHandler:
                 except Exception as e:
                     logging.error(f"Error during aspiration/dispense: {str(e)}")
                     for source, destination, volume, orig_idx in aspiration_set[last_index:]:
-                        if pipette_name == "p300_multi":
-                            # Recreate the original operations
-                            hidden_source_wells = source.parent.columns()[
-                                int(source.well_name[1:]) - 1
-                            ]
-                            if len(hidden_source_wells) == 1:
-                                hidden_source_wells = hidden_source_wells * 8
-                            hidden_destination_wells = destination.parent.columns()[
-                                int(destination.well_name[1:]) - 1
-                            ]
-                            if len(hidden_destination_wells) == 1:
-                                hidden_destination_wells = hidden_destination_wells * 8
-                            for i in range(8):
-                                original_idx = -1
-                                for op in zip(
-                                    source_wells,
-                                    destination_wells,
-                                    volumes,
-                                    range(len(source_wells)),
-                                ):
-                                    if (
-                                        op[0] == hidden_source_wells[i]
-                                        and op[1] == hidden_destination_wells[i]
-                                        and op[2] == volume
-                                    ):
-                                        original_idx = op[3]
-                                        break
-                                if original_idx not in [o[3] for o in failed_operations]:
-                                    failed_operations.append(
-                                        [
-                                            hidden_source_wells[i],
-                                            hidden_destination_wells[i],
-                                            volume,
-                                            original_idx,
-                                            f"pipette_error: {str(e)}",
-                                        ]
-                                    )
-                                allocated_indexes.append(original_idx)
-                        else:
-                            if orig_idx not in [o[3] for o in failed_operations]:
-                                failed_operations.append(
-                                    [
-                                        source,
-                                        destination,
-                                        volume,
-                                        orig_idx,
-                                        f"pipette_error: {str(e)}",
-                                    ]
-                                )
+                        idxs, failed_operations = add_failed_pipette_operations(
+                            pipette_name, orig_idx, failed_operations, f"pipette_error: {str(e)}"
+                        )
+                        allocated_indexes.extend(idxs)
+                    continue
 
             # Multi-aspirate single dispense
             # Sort the dispense operations based on the source well name
@@ -1426,49 +1275,10 @@ class LiquidHandler:
                 if pipette_name in out_of_tips_pipettes:
                     # Add all operations in this set to failed operations
                     for source, destination, volume, orig_idx in dispense_set:
-                        if pipette_name == "p300_multi":
-                            # Recreate the original operations
-                            hidden_source_wells = source.parent.columns()[
-                                int(source.well_name[1:]) - 1
-                            ]
-                            if len(hidden_source_wells) == 1:
-                                hidden_source_wells = hidden_source_wells * 8
-                            hidden_destination_wells = destination.parent.columns()[
-                                int(destination.well_name[1:]) - 1
-                            ]
-                            if len(hidden_destination_wells) == 1:
-                                hidden_destination_wells = hidden_destination_wells * 8
-                            for i in range(8):
-                                original_idx = -1
-                                for op in zip(
-                                    source_wells,
-                                    destination_wells,
-                                    volumes,
-                                    range(len(source_wells)),
-                                ):
-                                    if (
-                                        op[0] == hidden_source_wells[i]
-                                        and op[1] == hidden_destination_wells[i]
-                                        and op[2] == volume
-                                    ):
-                                        original_idx = op[3]
-                                        break
-                                if original_idx not in [o[3] for o in failed_operations]:
-                                    failed_operations.append(
-                                        [
-                                            hidden_source_wells[i],
-                                            hidden_destination_wells[i],
-                                            volume,
-                                            original_idx,
-                                            "out_of_tips",
-                                        ]
-                                    )
-                                allocated_indexes.append(original_idx)
-                        else:
-                            if orig_idx not in [o[3] for o in failed_operations]:
-                                failed_operations.append(
-                                    [source, destination, volume, orig_idx, "out_of_tips"]
-                                )
+                        idxs, failed_operations = add_failed_pipette_operations(
+                            pipette_name, orig_idx, failed_operations, "out_of_tips"
+                        )
+                        allocated_indexes.extend(idxs)
                     continue
 
                 # [[[source1, dest, vol1], [source2, dest, vol2]],[[source3, dest, vol3], [source4, dest, vol4]],...]
@@ -1502,49 +1312,10 @@ class LiquidHandler:
                     out_of_tips_pipettes.add(pipette_name)
                     # Add all operations in this set to failed operations
                     for source, destination, volume, orig_idx in dispense_set:
-                        if pipette_name == "p300_multi":
-                            # Recreate the original operations
-                            hidden_source_wells = source.parent.columns()[
-                                int(source.well_name[1:]) - 1
-                            ]
-                            if len(hidden_source_wells) == 1:
-                                hidden_source_wells = hidden_source_wells * 8
-                            hidden_destination_wells = destination.parent.columns()[
-                                int(destination.well_name[1:]) - 1
-                            ]
-                            if len(hidden_destination_wells) == 1:
-                                hidden_destination_wells = hidden_destination_wells * 8
-                            for i in range(8):
-                                original_idx = -1
-                                for op in zip(
-                                    source_wells,
-                                    destination_wells,
-                                    volumes,
-                                    range(len(source_wells)),
-                                ):
-                                    if (
-                                        op[0] == hidden_source_wells[i]
-                                        and op[1] == hidden_destination_wells[i]
-                                        and op[2] == volume
-                                    ):
-                                        original_idx = op[3]
-                                        break
-                                if original_idx not in [o[3] for o in failed_operations]:
-                                    failed_operations.append(
-                                        [
-                                            hidden_source_wells[i],
-                                            hidden_destination_wells[i],
-                                            volume,
-                                            original_idx,
-                                            "out_of_tips",
-                                        ]
-                                    )
-                                allocated_indexes.append(original_idx)
-                        else:
-                            if orig_idx not in [o[3] for o in failed_operations]:
-                                failed_operations.append(
-                                    [source, destination, volume, orig_idx, "out_of_tips"]
-                                )
+                        idxs, failed_operations = add_failed_pipette_operations(
+                            pipette_name, orig_idx, failed_operations, "out_of_tips"
+                        )
+                        allocated_indexes.extend(idxs)
                     continue
 
                 try:
@@ -1588,55 +1359,11 @@ class LiquidHandler:
                 except Exception as e:
                     logging.error(f"Error during aspiration/dispense: {str(e)}", exc_info=True)
                     for source, destination, volume, orig_idx in dispense_set:
-                        if pipette_name == "p300_multi":
-                            # Recreate the original operations
-                            hidden_source_wells = source.parent.columns()[
-                                int(source.well_name[1:]) - 1
-                            ]
-                            if len(hidden_source_wells) == 1:
-                                hidden_source_wells = hidden_source_wells * 8
-                            hidden_destination_wells = destination.parent.columns()[
-                                int(destination.well_name[1:]) - 1
-                            ]
-                            if len(hidden_destination_wells) == 1:
-                                hidden_destination_wells = hidden_destination_wells * 8
-                            for i in range(8):
-                                original_idx = -1
-                                for op in zip(
-                                    source_wells,
-                                    destination_wells,
-                                    volumes,
-                                    range(len(source_wells)),
-                                ):
-                                    if (
-                                        op[0] == hidden_source_wells[i]
-                                        and op[1] == hidden_destination_wells[i]
-                                        and op[2] == volume
-                                    ):
-                                        original_idx = op[3]
-                                        break
-                                if original_idx not in [o[3] for o in failed_operations]:
-                                    failed_operations.append(
-                                        [
-                                            hidden_source_wells[i],
-                                            hidden_destination_wells[i],
-                                            volume,
-                                            original_idx,
-                                            f"pipette_error: {str(e)}",
-                                        ]
-                                    )
-                                allocated_indexes.append(original_idx)
-                        else:
-                            if orig_idx not in [o[3] for o in failed_operations]:
-                                failed_operations.append(
-                                    [
-                                        source,
-                                        destination,
-                                        volume,
-                                        orig_idx,
-                                        f"pipette_error: {str(e)}",
-                                    ]
-                                )
+                        idxs, failed_operations = add_failed_pipette_operations(
+                            pipette_name, orig_idx, failed_operations, f"pipette_error: {str(e)}"
+                        )
+                        allocated_indexes.extend(idxs)
+                    continue
 
             # Simple aspirate and dispense
             # Sort the orphan operations based on the source well name
@@ -1644,47 +1371,10 @@ class LiquidHandler:
             for source, destination, volume, orig_idx in orphan_operations:
                 # Skip this operation if pipette has run out of tips
                 if pipette_name in out_of_tips_pipettes:
-                    if pipette_name == "p300_multi":
-                        # Recreate the original operations
-                        hidden_source_wells = source.parent.columns()[int(source.well_name[1:]) - 1]
-                        if len(hidden_source_wells) == 1:
-                            hidden_source_wells = hidden_source_wells * 8
-                        hidden_destination_wells = destination.parent.columns()[
-                            int(destination.well_name[1:]) - 1
-                        ]
-                        if len(hidden_destination_wells) == 1:
-                            hidden_destination_wells = hidden_destination_wells * 8
-                        for i in range(8):
-                            original_idx = -1
-                            for op in zip(
-                                source_wells,
-                                destination_wells,
-                                volumes,
-                                range(len(source_wells)),
-                            ):
-                                if (
-                                    op[0] == hidden_source_wells[i]
-                                    and op[1] == hidden_destination_wells[i]
-                                    and op[2] == volume
-                                ):
-                                    original_idx = op[3]
-                                    break
-                            if original_idx not in [o[3] for o in failed_operations]:
-                                failed_operations.append(
-                                    [
-                                        hidden_source_wells[i],
-                                        hidden_destination_wells[i],
-                                        volume,
-                                        original_idx,
-                                        "out_of_tips",
-                                    ]
-                                )
-                            allocated_indexes.append(original_idx)
-                    else:
-                        if orig_idx not in [o[3] for o in failed_operations]:
-                            failed_operations.append(
-                                [source, destination, volume, orig_idx, "out_of_tips"]
-                            )
+                    idxs, failed_operations = add_failed_pipette_operations(
+                        pipette_name, orig_idx, failed_operations, "out_of_tips"
+                    )
+                    allocated_indexes.extend(idxs)
                     continue
 
                 extra_volume = (
@@ -1718,47 +1408,10 @@ class LiquidHandler:
                         f"Out of tips for {pipette}. Marking all related operations as failed."
                     )
                     out_of_tips_pipettes.add(pipette_name)
-                    if pipette_name == "p300_multi":
-                        # Recreate the original operations
-                        hidden_source_wells = source.parent.columns()[int(source.well_name[1:]) - 1]
-                        if len(hidden_source_wells) == 1:
-                            hidden_source_wells = hidden_source_wells * 8
-                        hidden_destination_wells = destination.parent.columns()[
-                            int(destination.well_name[1:]) - 1
-                        ]
-                        if len(hidden_destination_wells) == 1:
-                            hidden_destination_wells = hidden_destination_wells * 8
-                        for i in range(8):
-                            original_idx = -1
-                            for op in zip(
-                                source_wells,
-                                destination_wells,
-                                volumes,
-                                range(len(source_wells)),
-                            ):
-                                if (
-                                    op[0] == hidden_source_wells[i]
-                                    and op[1] == hidden_destination_wells[i]
-                                    and op[2] == volume
-                                ):
-                                    original_idx = op[3]
-                                    break
-                            if original_idx not in [o[3] for o in failed_operations]:
-                                failed_operations.append(
-                                    [
-                                        hidden_source_wells[i],
-                                        hidden_destination_wells[i],
-                                        volume,
-                                        original_idx,
-                                        "out_of_tips",
-                                    ]
-                                )
-                            allocated_indexes.append(original_idx)
-                    else:
-                        if orig_idx not in [o[3] for o in failed_operations]:
-                            failed_operations.append(
-                                [source, destination, volume, orig_idx, "out_of_tips"]
-                            )
+                    idxs, failed_operations = add_failed_pipette_operations(
+                        pipette_name, orig_idx, failed_operations, "out_of_tips"
+                    )
+                    allocated_indexes.extend(idxs)
                     continue
 
                 try:
@@ -1798,53 +1451,11 @@ class LiquidHandler:
 
                 except Exception as e:
                     logging.error(f"Error during aspiration/dispense: {str(e)}")
-                    if pipette_name == "p300_multi":
-                        # Recreate the original operations
-                        hidden_source_wells = source.parent.columns()[int(source.well_name[1:]) - 1]
-                        if len(hidden_source_wells) == 1:
-                            hidden_source_wells = hidden_source_wells * 8
-                        hidden_destination_wells = destination.parent.columns()[
-                            int(destination.well_name[1:]) - 1
-                        ]
-                        if len(hidden_destination_wells) == 1:
-                            hidden_destination_wells = hidden_destination_wells * 8
-                        for i in range(8):
-                            original_idx = -1
-                            for op in zip(
-                                source_wells,
-                                destination_wells,
-                                volumes,
-                                range(len(source_wells)),
-                            ):
-                                if (
-                                    op[0] == hidden_source_wells[i]
-                                    and op[1] == hidden_destination_wells[i]
-                                    and op[2] == volume
-                                ):
-                                    original_idx = op[3]
-                                    break
-                            if original_idx not in [o[3] for o in failed_operations]:
-                                failed_operations.append(
-                                    [
-                                        hidden_source_wells[i],
-                                        hidden_destination_wells[i],
-                                        volume,
-                                        original_idx,
-                                        f"pipette_error: {str(e)}",
-                                    ]
-                                )
-                            allocated_indexes.append(original_idx)
-                    else:
-                        if orig_idx not in [o[3] for o in failed_operations]:
-                            failed_operations.append(
-                                [
-                                    source,
-                                    destination,
-                                    volume,
-                                    orig_idx,
-                                    f"pipette_error: {str(e)}",
-                                ]
-                            )
+                    idxs, failed_operations = add_failed_pipette_operations(
+                        pipette_name, orig_idx, failed_operations, f"pipette_error: {str(e)}"
+                    )
+                    allocated_indexes.extend(idxs)
+                    continue
 
             # All liquid handling is done
             try:
