@@ -4,7 +4,6 @@ import math
 import random
 from unittest.mock import MagicMock, patch, mock_open
 from ot_handler.liquid_handler import LiquidHandler
-from opentrons.protocol_api.labware import OutOfTipsError
 
 
 class TestLiquidHandlerDistribute(unittest.TestCase):
@@ -551,6 +550,68 @@ class TestLiquidHandlerTransfer(unittest.TestCase):
 
         # Reset the mock for future tests
         self.lh.p20.dispense = original_dispense
+
+    def test_transfer_with_large_volumes(self):
+        # Arrange
+        volumes = [1200, 1200]
+        source_wells = [self.mock_reservoir.wells()[0]] * 2
+        destination_wells = list(self.mock_labware.wells()[:2])
+
+        # Act
+        self.lh.transfer(
+            volumes=volumes,
+            source_wells=source_wells,
+            destination_wells=destination_wells,
+            new_tip="always",
+            overhead_liquid=False,
+            add_air_gap=False,
+        )
+
+        # Assert
+        self.assertEqual(self.lh.p300_multi.dispense.call_count, 8)
+        self.assertEqual(self.lh.p300_multi.aspirate.call_count, 8)
+        self.assertEqual(self.lh.p20.dispense.call_count, 0)
+        self.assertEqual(self.lh.p20.aspirate.call_count, 0)
+
+    def test_transfer_with_large_volumes_and_filter_tips(self):
+        # Initialize LiquidHandler with simulation mode
+        lh = LiquidHandler(simulation=True, load_default=False)
+        lh.load_tips("opentrons_96_filtertiprack_200ul", 7, single_channel=False)
+        lh.load_tips("opentrons_96_filtertiprack_200ul", 6, single_channel=True)
+        lh.load_tips("opentrons_96_tiprack_20ul", 11, single_channel=True)
+
+        # Mock pipettes
+        lh.p300_multi = MagicMock()
+        lh.p20 = MagicMock()
+        lh.p20.min_volume = 1
+        lh.p20.max_volume = 20
+        lh.p300_multi.min_volume = 20
+        lh.p300_multi.max_volume = 300
+
+        # Mock labware
+        mock_labware = lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", 9, "mock labware")
+        mock_reservoir = lh.load_labware("nest_12_reservoir_15ml", 2, "mock reservoir source")
+
+        # Arrange
+        volumes = [1000, 1000]
+        source_wells = [mock_reservoir.wells()[0]] * 2
+        destination_wells = list(mock_labware.wells()[:2])
+
+        # Act
+        lh.transfer(
+            volumes=volumes,
+            source_wells=source_wells,
+            destination_wells=destination_wells,
+            new_tip="always",
+            overhead_liquid=False,
+            add_air_gap=False,
+        )
+
+        # Assert
+        self.assertEqual(lh.p300_multi.dispense.call_count, 10)
+        self.assertEqual(lh.p300_multi.aspirate.call_count, 10)
+        self.assertEqual(lh.p20.dispense.call_count, 0)
+        self.assertEqual(lh.p20.aspirate.call_count, 0)
 
 
 class TestLiquidHandlerAllocate(unittest.TestCase):

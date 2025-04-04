@@ -908,14 +908,13 @@ class LiquidHandler:
         )
 
         # Check for volumes exceeding pipette max volume, and split those into multiple operations
-        max_volume = self.p300_multi.max_volume
         new_operations = []
         for operation in [[v, s, d] for v, s, d in zip(volumes, source_wells, destination_wells)]:
             volume = operation[0]
-            while volume > max_volume:
-                if volume > max_volume + self.p300_multi.min_volume:
-                    new_operations.append([max_volume, operation[1], operation[2]])
-                    volume -= max_volume
+            while volume > self.max_volume:
+                if volume > self.max_volume + self.p300_multi.min_volume:
+                    new_operations.append([self.max_volume, operation[1], operation[2]])
+                    volume -= self.max_volume
                 else:
                     split_volume = volume / 2
                     new_operations.append([split_volume, operation[1], operation[2]])
