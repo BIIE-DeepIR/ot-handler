@@ -30,6 +30,7 @@ class LiquidHandler:
         simulation: bool = False,
         max_volume=None,
         deck_layout=None,
+        labware_folder=None,
     ):
         """
         Initialize a LiquidHandler instance.
@@ -43,6 +44,7 @@ class LiquidHandler:
             simulation (bool): If True, the handler operates in simulation mode. Defaults to False.
             max_volume: Custom maximum volume setting for pipette transfers in ul. If not provided, defaults to the pipette's inherent max volume.
             deck_layout (Union[str, dict]): Path to a JSON file or dictionary containing deck layout configuration. If provided, overrides load_default.
+            labware_folder (str): Path to a folder containing labware definitions. If provided, overrides the default labware folder.
         """
         # Check for conflicting parameters
         if load_default and deck_layout is not None:
@@ -71,6 +73,17 @@ class LiquidHandler:
         self.temperature_module = None
         self.shaker_module = None
         self.magnetic_module = None
+        self.labware_folder = (
+            labware_folder if labware_folder else os.path.join(os.path.dirname(__file__), "labware")
+        )
+        self.p300_multi = self.protocol_api.load_instrument(
+            "p300_multi_gen2", "right", tip_racks=self.p300_tips
+        )
+        self.p20 = self.protocol_api.load_instrument(
+            "p20_single_gen2", "left", tip_racks=self.single_p20_tips
+        )
+
+        self.max_volume = max_volume if max_volume else self.p300_multi.max_volume
 
         # Load deck layout from file/dict or default
         if deck_layout is not None:
@@ -89,27 +102,15 @@ class LiquidHandler:
         logging.info("Loading instruments")
         self.trash = self.protocol_api.fixed_trash
 
-        # self.p300 = self.protocol_api.load_instrument('p300_single_gen2', 'right', tip_racks=self.p300_tips)  # Not yet supported
-
-        self.p300_multi = self.protocol_api.load_instrument(
-            "p300_multi_gen2", "right", tip_racks=self.p300_tips
-        )
         if len(self.p300_multi.tip_racks) == 0:
             logging.warning(
                 "No tip racks confiugured for the pipette. Use lh.p300_multi.configure_nozzle_layout() to load the tips."
             )
 
-        self.p20 = self.protocol_api.load_instrument(
-            "p20_single_gen2", "left", tip_racks=self.single_p20_tips
-        )
         if len(self.p20.tip_racks) == 0:
             logging.warning(
                 "No tip racks confiugured for the pipette. Use lh.p20.configure_nozzle_layout() to load the tips."
             )
-
-        self.max_volume = max_volume if max_volume else self.p300_multi.max_volume
-
-        # self.p20_multi = self.protocol_api.load_instrument('p20_multi_gen2', 'left', tip_racks=self.p20_multi_tips)  # Not yet supported
 
         logging.info("Closing labware latch")
         try:
@@ -616,7 +617,7 @@ class LiquidHandler:
                 labware = self.protocol_api.deck[deck_position].load_labware(model_string)
             except ProtocolCommandFailedError:
                 # The model string could match a custom labware file on the system
-                with open(f"labware/{model_string}.json") as labware_file:
+                with open(f"{self.labware_folder}/{model_string}.json") as labware_file:
                     labware_def = json.load(labware_file)
                 labware = self.protocol_api.deck[deck_position].load_labware_from_definition(
                     labware_def, None
@@ -627,7 +628,7 @@ class LiquidHandler:
                 labware = self.protocol_api.load_labware(model_string, deck_position, label=name)
             except ProtocolCommandFailedError:
                 # The model string could match a custom labware file on the system
-                with open(f"labware/{model_string}.json") as labware_file:
+                with open(f"{self.labware_folder}/{model_string}.json") as labware_file:
                     labware_def = json.load(labware_file)
                 labware = self.protocol_api.load_labware_from_definition(labware_def, deck_position)
 
