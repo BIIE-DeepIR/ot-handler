@@ -113,13 +113,16 @@ class LiquidHandler:
             )
 
         logging.info("Closing labware latch")
-        try:
-            self.shaker_module.close_labware_latch()  # Currently all heater-shaker commands fail
-        except Exception:
-            pass
+        self.close_shaker_latch()
 
         self.home()
-        self.toggle_light(state=True)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        logging.info(
+            "Homing the robot and opening the labware latch as a part of the cleanup procedure."
+        )
+        self.home()
+        self.close_shaker_latch()
 
     def _count_columns(self, plate_object, sample_count: int):
         """
@@ -758,6 +761,26 @@ class LiquidHandler:
 
         self.temperature_module.deactivate()
         self.temperature_timer = None
+
+    def open_shaker_latch(self):
+        """
+        Open the shaker module's labware latch.
+        """
+        if self.shaker_module:
+            try:
+                self.shaker_module.open_labware_latch()
+            except Exception:
+                pass
+
+    def close_shaker_latch(self):
+        """
+        Close the shaker module's labware latch.
+        """
+        if self.shaker_module:
+            try:
+                self.shaker_module.close_labware_latch()
+            except Exception:
+                pass
 
     def shake(self, speed: float, duration: float, wait: bool = False):
         """
