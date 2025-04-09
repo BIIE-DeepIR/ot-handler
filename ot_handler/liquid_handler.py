@@ -117,7 +117,7 @@ class LiquidHandler:
 
         self.home()
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __del__(self):
         logging.info(
             "Homing the robot and opening the labware latch as a part of the cleanup procedure."
         )
