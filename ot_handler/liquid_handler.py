@@ -122,7 +122,7 @@ class LiquidHandler:
             "Homing the robot and opening the labware latch as a part of the cleanup procedure."
         )
         self.home()
-        self.close_shaker_latch()
+        self.open_shaker_latch()
 
     def _count_columns(self, plate_object, sample_count: int):
         """
