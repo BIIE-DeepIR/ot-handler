@@ -618,7 +618,7 @@ class LiquidHandler:
             logging.debug("Loading labware on the module")
             try:
                 labware = self.protocol_api.deck[deck_position].load_labware(model_string)
-            except ProtocolCommandFailedError:
+            except Exception as e:
                 # The model string could match a custom labware file on the system
                 with open(f"{self.labware_folder}/{model_string}.json") as labware_file:
                     labware_def = json.load(labware_file)
@@ -946,7 +946,8 @@ class LiquidHandler:
                     volume = 0
             if volume > 0:
                 new_operations.append([volume, operation[1], operation[2]])
-        volumes, source_wells, destination_wells = [list(lst) for lst in zip(*new_operations)]
+        volumes, source_wells, destination_wells = [list(lst) for lst in zip(*new_operations)] if new_operations else ([], [], [])
+
 
         # Split the liquid handling operations so that the source wells are within one labware, and destination wells too
         source_labware = {well.parent for well in source_wells}
