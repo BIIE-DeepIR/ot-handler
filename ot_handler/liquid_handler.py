@@ -347,7 +347,7 @@ class LiquidHandler:
                                 source_troughs = []
                                 for name, count in source_well_count.items():
                                     well = source_labware.wells(name)[0]
-                                    if count >= 8 and hasattr(well, "width") and well.width > 70:
+                                    if count >= 8 and hasattr(well, "width") and well.width and well.width > 70:
                                         source_troughs.append(well)
 
                                 destination_troughs = []
