@@ -232,7 +232,7 @@ class LiquidHandler:
                 return "A"
 
         # Check that parameters are compatible with this function
-        if not (isinstance(source_wells, list) and isinstance(source_wells[0], Well)):
+        if not (isinstance(source_wells, list) and source_wells and isinstance(source_wells[0], Well)):
             raise ValueError("The source_wells must be a list of Well objects")
         if not (
             isinstance(destination_wells, list)
