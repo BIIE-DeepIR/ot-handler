@@ -860,7 +860,8 @@ class LiquidHandler:
         trash_tips: bool = True,
         add_air_gap: bool = True,
         overhead_liquid: bool = True,
-        mix_after=False,
+        mix_after: bool = False,
+        retention_time: float = 0.0,
         **kwargs,
     ):
         """
@@ -881,6 +882,7 @@ class LiquidHandler:
         - add_air_gap (bool, optional): Whether to add an air gap after aspiration.
         - overhead_liquid (bool, optional): Whether to aspirate extra liquid to ensure complete transfer.
         - mix_after (tuple, optional): First element is repetitions and second element is volume of mixing at the destination well after dispense. False when no mixing needed. Will block multi-dispense mode.
+        - retention_time (float, optional): time to wait in seconds after every aspiration & dispense prior to moving on. Defaults to 0.0 s. Helps viscous liquids to populate the tip fully.
         - **kwargs: Additional keyword arguments for pipette operations.
 
 
@@ -961,6 +963,7 @@ class LiquidHandler:
             "trash_tips": trash_tips,
             "add_air_gap": add_air_gap,
             "overhead_liquid": overhead_liquid,
+            "retention_time": retention_time,
             **kwargs,
         }
         failed_operations = []
@@ -1241,6 +1244,7 @@ class LiquidHandler:
                     pipette.aspirate(
                         volume=set_volume + extra_volume, location=source_well, **kwargs
                     )
+                    time.sleep(retention_time)
                     if touch_tip:
                         pipette.touch_tip(v_offset=-1)
 
@@ -1250,6 +1254,7 @@ class LiquidHandler:
                         aspiration_set
                     ):
                         pipette.dispense(volume=volume, location=destination_well, **kwargs)
+                        time.sleep(retention_time)
                         if touch_tip:
                             pipette.touch_tip(v_offset=-1)
 
@@ -1350,12 +1355,14 @@ class LiquidHandler:
                     total_volume = 0
                     for source, _, volume, idx in dispense_set:
                         pipette.aspirate(volume=volume, location=source, **kwargs)
+                        time.sleep(retention_time)
                         if touch_tip:
                             pipette.touch_tip(v_offset=-1)
                         total_volume += volume
 
                     # Perform dispense
                     pipette.dispense(volume=total_volume, location=destination_well, **kwargs)
+                    time.sleep(retention_time)
                     if touch_tip:
                         pipette.touch_tip(v_offset=-1)
 
@@ -1444,11 +1451,13 @@ class LiquidHandler:
                         pipette.move_to(location=source.top(5))
                         pipette.air_gap(volume=air_gap)
                     pipette.aspirate(volume=volume + extra_volume, location=source, **kwargs)
+                    time.sleep(retention_time)
                     if touch_tip:
                         pipette.touch_tip(v_offset=-1)
 
                     # Perform dispense
                     pipette.dispense(volume=volume, location=destination, **kwargs)
+                    time.sleep(retention_time)
                     if touch_tip:
                         pipette.touch_tip(v_offset=-1)
 
