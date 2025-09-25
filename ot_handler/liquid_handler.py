@@ -862,6 +862,7 @@ class LiquidHandler:
         overhead_liquid: bool = True,
         mix_after: bool = False,
         retention_time: float = 0.0,
+        tip_reuse_limit: int = None,
         **kwargs,
     ):
         """
@@ -883,6 +884,7 @@ class LiquidHandler:
         - overhead_liquid (bool, optional): Whether to aspirate extra liquid to ensure complete transfer.
         - mix_after (tuple, optional): First element is repetitions and second element is volume of mixing at the destination well after dispense. False when no mixing needed. Will block multi-dispense mode.
         - retention_time (float, optional): time to wait in seconds after every aspiration & dispense prior to moving on. Defaults to 0.0 s. Helps viscous liquids to populate the tip fully.
+        - tip_reuse_limit (int, optional): Maximum number of aspiration-dispense cycles before forcing a tip change, even when new_tip is "never" or "once". If None (default), no limit is enforced.
         - **kwargs: Additional keyword arguments for pipette operations.
 
 
@@ -1064,6 +1066,9 @@ class LiquidHandler:
         # Track which pipettes have run out of tips
         out_of_tips_pipettes = set()
 
+        # Track tip usage counts for tip_reuse_limit
+        tip_usage_counts = {pipette_name: 0 for _, _, _, pipette_name in allocated_sets}
+
         # When possible, group the operations for multi-dispense and multi-aspiration
         allocated_indexes = []
         for pipette, single_tip_mode, steps, pipette_name in allocated_sets:
@@ -1210,22 +1215,37 @@ class LiquidHandler:
                 )
 
                 try:
+                    # Check if tip should be changed due to reuse limit
+                    force_tip_change = (
+                        tip_reuse_limit is not None 
+                        and tip_usage_counts[pipette_name] >= tip_reuse_limit
+                        and pipette.has_tip
+                    )
+                    
                     match new_tip:
                         case "always" | "on aspiration":
                             if pipette.has_tip:
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                             pipette.pick_up_tip()
+                            tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                         case "once":
-                            if first_round:
+                            if first_round or force_tip_change:
                                 if pipette.has_tip:
                                     pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
                                 first_round = False
+                                tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                             if not pipette.has_tip:
                                 pipette.pick_up_tip()
+                                tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                         case _:
                             # Keep the tips already attached, otherwise pick up fresh ones
-                            if not pipette.has_tip:
+                            if force_tip_change:
+                                pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                                 pipette.pick_up_tip()
+                                tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                            elif not pipette.has_tip:
+                                pipette.pick_up_tip()
+                                tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                 except OutOfTipsError:
                     logging.error(
                         f"Out of tips for {pipette}. Marking all related operations as failed."
@@ -1286,6 +1306,10 @@ class LiquidHandler:
                             pipette.blow_out(source_well.top())
                         elif blow_out_to == "destination":
                             pipette.blow_out(destination_well.top())
+                    
+                    # Increment tip usage counter after successful aspiration-dispense cycle
+                    if tip_reuse_limit is not None:
+                        tip_usage_counts[pipette_name] += 1
 
                 except Exception as e:
                     logging.error(f"Error during aspiration/dispense: {str(e)}")
@@ -1321,22 +1345,37 @@ class LiquidHandler:
                 )
 
                 try:
+                    # Check if tip should be changed due to reuse limit
+                    force_tip_change = (
+                        tip_reuse_limit is not None 
+                        and tip_usage_counts[pipette_name] >= tip_reuse_limit
+                        and pipette.has_tip
+                    )
+                    
                     match new_tip:
                         case "always" | "on aspiration":
                             if pipette.has_tip:
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                             pipette.pick_up_tip()
+                            tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                         case "once":
-                            if first_round:
+                            if first_round or force_tip_change:
                                 if pipette.has_tip:
                                     pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
                                 first_round = False
+                                tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                             if not pipette.has_tip:
                                 pipette.pick_up_tip()
+                                tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                         case _:
                             # Keep the tips already attached, otherwise pick up fresh ones
-                            if not pipette.has_tip:
+                            if force_tip_change:
+                                pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                                 pipette.pick_up_tip()
+                                tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                            elif not pipette.has_tip:
+                                pipette.pick_up_tip()
+                                tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                 except OutOfTipsError:
                     logging.error(
                         f"Out of tips for {pipette}. Marking all related operations as failed."
@@ -1389,6 +1428,10 @@ class LiquidHandler:
                             pipette.blow_out(source.top())
                         elif blow_out_to == "destination":
                             pipette.blow_out(destination_well.top())
+                    
+                    # Increment tip usage counter after successful aspiration-dispense cycle
+                    if tip_reuse_limit is not None:
+                        tip_usage_counts[pipette_name] += 1
 
                 except Exception as e:
                     logging.error(f"Error during aspiration/dispense: {str(e)}", exc_info=True)
@@ -1421,22 +1464,37 @@ class LiquidHandler:
                 )
 
                 try:
+                    # Check if tip should be changed due to reuse limit
+                    force_tip_change = (
+                        tip_reuse_limit is not None 
+                        and tip_usage_counts[pipette_name] >= tip_reuse_limit
+                        and pipette.has_tip
+                    )
+                    
                     match new_tip:
                         case "always" | "on aspiration":
                             if pipette.has_tip:
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                             pipette.pick_up_tip()
+                            tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                         case "once":
-                            if first_round:
+                            if first_round or force_tip_change:
                                 if pipette.has_tip:
                                     pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
                                 first_round = False
+                                tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                             if not pipette.has_tip:
                                 pipette.pick_up_tip()
+                                tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                         case _:
                             # Keep the tips already attached, otherwise pick up fresh ones
-                            if not pipette.has_tip:
+                            if force_tip_change:
+                                pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                                 pipette.pick_up_tip()
+                                tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                            elif not pipette.has_tip:
+                                pipette.pick_up_tip()
+                                tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                 except OutOfTipsError:
                     logging.error(
                         f"Out of tips for {pipette}. Marking all related operations as failed."
@@ -1484,6 +1542,10 @@ class LiquidHandler:
                             pipette.blow_out(source.top())
                         elif blow_out_to == "destination":
                             pipette.blow_out(destination.top())
+                    
+                    # Increment tip usage counter after successful aspiration-dispense cycle
+                    if tip_reuse_limit is not None:
+                        tip_usage_counts[pipette_name] += 1
 
                 except Exception as e:
                     logging.error(f"Error during aspiration/dispense: {str(e)}")
