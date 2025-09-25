@@ -118,11 +118,12 @@ class LiquidHandler:
         self.home()
 
     def __del__(self):
-        logging.info(
-            "Homing the robot and opening the labware latch as a part of the cleanup procedure."
-        )
-        self.home()
-        self.open_shaker_latch()
+        if not self.simulation_mode:
+            logging.info(
+                "Homing the robot and opening the labware latch as a part of the cleanup procedure."
+            )
+            self.home()
+            self.open_shaker_latch()
 
     def _count_columns(self, plate_object, sample_count: int):
         """
