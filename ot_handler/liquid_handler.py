@@ -936,14 +936,15 @@ class LiquidHandler:
             "The parameter blow_out_to must always be defined and one of source, destination or trash or empty string. Blow out happens only if there's air gap or overhead liquid"
         )
 
-        # Check for volumes exceeding pipette max volume, and split those into multiple operations
+        # Check for volumes exceeding effective pipette max volume (accounting for overhead liquid)
+        effective_max_single_volume = self.max_volume - (self.p300_multi.min_volume if overhead_liquid else 0)
         new_operations = []
         for operation in [[v, s, d] for v, s, d in zip(volumes, source_wells, destination_wells)]:
             volume = operation[0]
-            while volume > self.max_volume:
-                if volume > self.max_volume + self.p300_multi.min_volume:
-                    new_operations.append([self.max_volume, operation[1], operation[2]])
-                    volume -= self.max_volume
+            while volume > effective_max_single_volume:
+                if volume > effective_max_single_volume + self.p300_multi.min_volume:
+                    new_operations.append([effective_max_single_volume, operation[1], operation[2]])
+                    volume -= effective_max_single_volume
                 else:
                     split_volume = volume / 2
                     new_operations.append([split_volume, operation[1], operation[2]])
@@ -1209,19 +1210,6 @@ class LiquidHandler:
                 # [[[source, dest, vol], [source, dest, vol]],[[source, dest2, vol2], [source, dest2, vol2]],...]
                 source_well = aspiration_set[0][0]
                 set_volume = sum([op[2] for op in aspiration_set])
-                
-                # Check if overhead liquid and air gap should be added based on tip state
-                should_add_overhead = overhead_liquid and not tip_state[pipette_name]["has_overhead"]
-                should_add_air_gap = add_air_gap and not tip_state[pipette_name]["has_air_gap"]
-                
-                extra_volume = (
-                    pipette.min_volume if should_add_overhead and set_volume + pipette.min_volume <= max_vol else 0
-                )
-                air_gap = (
-                    min(pipette.min_volume, 20, max(0, max_vol - set_volume - extra_volume))
-                    if should_add_air_gap
-                    else 0
-                )
 
                 try:
                     # Check if tip should be changed due to reuse limit
@@ -1269,6 +1257,20 @@ class LiquidHandler:
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                                 # Reset tip state for new tip
                                 tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
+                                
+                    # Now calculate overhead liquid and air gap AFTER tip management
+                    # Check if overhead liquid and air gap should be added based on current tip state
+                    should_add_overhead = overhead_liquid and not tip_state[pipette_name]["has_overhead"]
+                    should_add_air_gap = add_air_gap and not tip_state[pipette_name]["has_air_gap"]
+                    
+                    extra_volume = (
+                        pipette.min_volume if should_add_overhead and set_volume + pipette.min_volume <= max_vol else 0
+                    )
+                    air_gap = (
+                        min(pipette.min_volume, 20, max(0, max_vol - set_volume - extra_volume))
+                        if should_add_air_gap
+                        else 0
+                    )
                 except OutOfTipsError:
                     logging.error(
                         f"Out of tips for {pipette}. Marking all related operations as failed."
@@ -1375,13 +1377,6 @@ class LiquidHandler:
                 # [[[source1, dest, vol1], [source2, dest, vol2]],[[source3, dest, vol3], [source4, dest, vol4]],...]
                 destination_well = dispense_set[0][1]
                 set_volume = sum([op[2] for op in dispense_set])
-                
-                # Check if air gap should be added based on tip state
-                should_add_air_gap = add_air_gap and not tip_state[pipette_name]["has_air_gap"]
-                
-                air_gap = (
-                    min(pipette.min_volume, 20, max(0, max_vol - set_volume)) if should_add_air_gap else 0
-                )
 
                 try:
                     # Check if tip should be changed due to reuse limit
@@ -1429,6 +1424,14 @@ class LiquidHandler:
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                                 # Reset tip state for new tip
                                 tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
+                                
+                    # Now calculate air gap AFTER tip management
+                    # Check if air gap should be added based on current tip state
+                    should_add_air_gap = add_air_gap and not tip_state[pipette_name]["has_air_gap"]
+                    
+                    air_gap = (
+                        min(pipette.min_volume, 20, max(0, max_vol - set_volume)) if should_add_air_gap else 0
+                    )
                 except OutOfTipsError:
                     logging.error(
                         f"Out of tips for {pipette}. Marking all related operations as failed."
@@ -1516,19 +1519,6 @@ class LiquidHandler:
                     allocated_indexes.extend(idxs)
                     continue
 
-                # Check if overhead liquid and air gap should be added based on tip state
-                should_add_overhead = overhead_liquid and not tip_state[pipette_name]["has_overhead"]
-                should_add_air_gap = add_air_gap and not tip_state[pipette_name]["has_air_gap"]
-                
-                extra_volume = (
-                    pipette.min_volume if should_add_overhead and volume + pipette.min_volume <= max_vol else 0
-                )
-                air_gap = (
-                    min(pipette.min_volume, 20, max(0, max_vol - volume - extra_volume))
-                    if should_add_air_gap
-                    else 0
-                )
-
                 try:
                     # Check if tip should be changed due to reuse limit
                     force_tip_change = (
@@ -1575,6 +1565,20 @@ class LiquidHandler:
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                                 # Reset tip state for new tip
                                 tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
+                                
+                    # Now calculate overhead liquid and air gap AFTER tip management
+                    # Check if overhead liquid and air gap should be added based on current tip state
+                    should_add_overhead = overhead_liquid and not tip_state[pipette_name]["has_overhead"]
+                    should_add_air_gap = add_air_gap and not tip_state[pipette_name]["has_air_gap"]
+                    
+                    extra_volume = (
+                        pipette.min_volume if should_add_overhead and volume + pipette.min_volume <= max_vol else 0
+                    )
+                    air_gap = (
+                        min(pipette.min_volume, 20, max(0, max_vol - volume - extra_volume))
+                        if should_add_air_gap
+                        else 0
+                    )
                 except OutOfTipsError:
                     logging.error(
                         f"Out of tips for {pipette}. Marking all related operations as failed."
@@ -1654,19 +1658,20 @@ class LiquidHandler:
             except Exception as e:
                 logging.error(f"Error resetting single tip mode: {str(e)}")
 
-        if pipette_name not in out_of_tips_pipettes and pipette.has_tip:
-            try:
-                if new_tip != "never":
-                    if trash_tips:
-                        pipette.drop_tip()
-                    else:
-                        pipette.return_tip()
-                    # Reset tip state when tip is dropped/returned at end of operation
+            # Clean up tips for this pipette at the end of its operations
+            if pipette_name not in out_of_tips_pipettes and pipette.has_tip:
+                try:
+                    if new_tip != "never":
+                        if trash_tips:
+                            pipette.drop_tip()
+                        else:
+                            pipette.return_tip()
+                        # Reset tip state when tip is dropped/returned at end of operation
+                        tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
+                except Exception as e:
+                    logging.error(f"Error dropping/returning tip: {str(e)}")
+                    # Reset tip state even if drop/return fails
                     tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
-            except Exception as e:
-                logging.error(f"Error dropping/returning tip: {str(e)}")
-                # Reset tip state even if drop/return fails
-                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
 
         failed_operations.sort(key=lambda x: x[3])
         return failed_operations
