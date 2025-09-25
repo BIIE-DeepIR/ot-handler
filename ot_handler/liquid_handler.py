@@ -1069,6 +1069,9 @@ class LiquidHandler:
 
         # Track tip usage counts for tip_reuse_limit
         tip_usage_counts = {pipette_name: 0 for _, _, _, pipette_name in allocated_sets}
+        
+        # Track tip state for overhead liquid and air gap to prevent duplicate additions
+        tip_state = {pipette_name: {"has_overhead": False, "has_air_gap": False} for _, _, _, pipette_name in allocated_sets}
 
         # When possible, group the operations for multi-dispense and multi-aspiration
         allocated_indexes = []
@@ -1206,12 +1209,17 @@ class LiquidHandler:
                 # [[[source, dest, vol], [source, dest, vol]],[[source, dest2, vol2], [source, dest2, vol2]],...]
                 source_well = aspiration_set[0][0]
                 set_volume = sum([op[2] for op in aspiration_set])
+                
+                # Check if overhead liquid and air gap should be added based on tip state
+                should_add_overhead = overhead_liquid and not tip_state[pipette_name]["has_overhead"]
+                should_add_air_gap = add_air_gap and not tip_state[pipette_name]["has_air_gap"]
+                
                 extra_volume = (
-                    pipette.min_volume if overhead_liquid and set_volume + pipette.min_volume <= max_vol else 0
+                    pipette.min_volume if should_add_overhead and set_volume + pipette.min_volume <= max_vol else 0
                 )
                 air_gap = (
                     min(pipette.min_volume, 20, max(0, max_vol - set_volume - extra_volume))
-                    if add_air_gap
+                    if should_add_air_gap
                     else 0
                 )
 
@@ -1227,26 +1235,40 @@ class LiquidHandler:
                         case "always" | "on aspiration":
                             if pipette.has_tip:
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
+                                # Reset tip state when tip is dropped/returned
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                             pipette.pick_up_tip()
                             tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                            # Reset tip state for new tip
+                            tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         case "once":
                             if first_round or force_tip_change:
                                 if pipette.has_tip:
                                     pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
+                                    # Reset tip state when tip is dropped
+                                    tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                                 first_round = False
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                             if not pipette.has_tip:
                                 pipette.pick_up_tip()
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                                # Reset tip state for new tip
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         case _:
                             # Keep the tips already attached, otherwise pick up fresh ones
                             if force_tip_change:
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
+                                # Reset tip state when tip is dropped/returned
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                                 pipette.pick_up_tip()
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                                # Reset tip state for new tip
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                             elif not pipette.has_tip:
                                 pipette.pick_up_tip()
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                                # Reset tip state for new tip
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                 except OutOfTipsError:
                     logging.error(
                         f"Out of tips for {pipette}. Marking all related operations as failed."
@@ -1266,9 +1288,14 @@ class LiquidHandler:
                     if air_gap:
                         pipette.move_to(location=source_well.top(5))
                         pipette.air_gap(volume=air_gap)
+                        # Mark that air gap has been added to this tip
+                        tip_state[pipette_name]["has_air_gap"] = True
                     pipette.aspirate(
                         volume=set_volume + extra_volume, location=source_well, **kwargs
                     )
+                    # Mark that overhead liquid has been added to this tip if extra_volume > 0
+                    if extra_volume > 0:
+                        tip_state[pipette_name]["has_overhead"] = True
                     time.sleep(retention_time)
                     if touch_tip:
                         pipette.touch_tip(v_offset=-1)
@@ -1307,6 +1334,8 @@ class LiquidHandler:
                             pipette.blow_out(source_well.top())
                         elif blow_out_to == "destination":
                             pipette.blow_out(destination_well.top())
+                        # Reset tip state after blowout as air gap and overhead liquid are expelled
+                        tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                     
                     # Increment tip usage counter after successful aspiration-dispense cycle
                     if tip_reuse_limit is not None:
@@ -1341,8 +1370,12 @@ class LiquidHandler:
                 # [[[source1, dest, vol1], [source2, dest, vol2]],[[source3, dest, vol3], [source4, dest, vol4]],...]
                 destination_well = dispense_set[0][1]
                 set_volume = sum([op[2] for op in dispense_set])
+                
+                # Check if air gap should be added based on tip state
+                should_add_air_gap = add_air_gap and not tip_state[pipette_name]["has_air_gap"]
+                
                 air_gap = (
-                    min(pipette.min_volume, 20, max(0, max_vol - set_volume)) if add_air_gap else 0
+                    min(pipette.min_volume, 20, max(0, max_vol - set_volume)) if should_add_air_gap else 0
                 )
 
                 try:
@@ -1357,26 +1390,40 @@ class LiquidHandler:
                         case "always" | "on aspiration":
                             if pipette.has_tip:
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
+                                # Reset tip state when tip is dropped/returned
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                             pipette.pick_up_tip()
                             tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                            # Reset tip state for new tip
+                            tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         case "once":
                             if first_round or force_tip_change:
                                 if pipette.has_tip:
                                     pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
+                                    # Reset tip state when tip is dropped
+                                    tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                                 first_round = False
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                             if not pipette.has_tip:
                                 pipette.pick_up_tip()
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                                # Reset tip state for new tip
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         case _:
                             # Keep the tips already attached, otherwise pick up fresh ones
                             if force_tip_change:
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
+                                # Reset tip state when tip is dropped/returned
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                                 pipette.pick_up_tip()
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                                # Reset tip state for new tip
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                             elif not pipette.has_tip:
                                 pipette.pick_up_tip()
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                                # Reset tip state for new tip
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                 except OutOfTipsError:
                     logging.error(
                         f"Out of tips for {pipette}. Marking all related operations as failed."
@@ -1395,6 +1442,8 @@ class LiquidHandler:
                     if air_gap:
                         pipette.move_to(location=dispense_set[0][0].top(5))
                         pipette.air_gap(volume=air_gap)
+                        # Mark that air gap has been added to this tip
+                        tip_state[pipette_name]["has_air_gap"] = True
                     total_volume = 0
                     for source, _, volume, idx in dispense_set:
                         pipette.aspirate(volume=volume, location=source, **kwargs)
@@ -1429,6 +1478,8 @@ class LiquidHandler:
                             pipette.blow_out(source.top())
                         elif blow_out_to == "destination":
                             pipette.blow_out(destination_well.top())
+                        # Reset tip state after blowout as air gap and overhead liquid are expelled
+                        tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                     
                     # Increment tip usage counter after successful aspiration-dispense cycle
                     if tip_reuse_limit is not None:
@@ -1455,12 +1506,16 @@ class LiquidHandler:
                     allocated_indexes.extend(idxs)
                     continue
 
+                # Check if overhead liquid and air gap should be added based on tip state
+                should_add_overhead = overhead_liquid and not tip_state[pipette_name]["has_overhead"]
+                should_add_air_gap = add_air_gap and not tip_state[pipette_name]["has_air_gap"]
+                
                 extra_volume = (
-                    pipette.min_volume if overhead_liquid and volume + pipette.min_volume <= max_vol else 0
+                    pipette.min_volume if should_add_overhead and volume + pipette.min_volume <= max_vol else 0
                 )
                 air_gap = (
                     min(pipette.min_volume, 20, max(0, max_vol - volume - extra_volume))
-                    if add_air_gap
+                    if should_add_air_gap
                     else 0
                 )
 
@@ -1476,26 +1531,40 @@ class LiquidHandler:
                         case "always" | "on aspiration":
                             if pipette.has_tip:
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
+                                # Reset tip state when tip is dropped/returned
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                             pipette.pick_up_tip()
                             tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                            # Reset tip state for new tip
+                            tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         case "once":
                             if first_round or force_tip_change:
                                 if pipette.has_tip:
                                     pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
+                                    # Reset tip state when tip is dropped
+                                    tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                                 first_round = False
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
                             if not pipette.has_tip:
                                 pipette.pick_up_tip()
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                                # Reset tip state for new tip
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         case _:
                             # Keep the tips already attached, otherwise pick up fresh ones
                             if force_tip_change:
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
+                                # Reset tip state when tip is dropped/returned
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                                 pipette.pick_up_tip()
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                                # Reset tip state for new tip
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                             elif not pipette.has_tip:
                                 pipette.pick_up_tip()
                                 tip_usage_counts[pipette_name] = 0  # Reset counter on new tip
+                                # Reset tip state for new tip
+                                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                 except OutOfTipsError:
                     logging.error(
                         f"Out of tips for {pipette}. Marking all related operations as failed."
@@ -1512,7 +1581,12 @@ class LiquidHandler:
                     if air_gap:
                         pipette.move_to(location=source.top(5))
                         pipette.air_gap(volume=air_gap)
+                        # Mark that air gap has been added to this tip
+                        tip_state[pipette_name]["has_air_gap"] = True
                     pipette.aspirate(volume=volume + extra_volume, location=source, **kwargs)
+                    # Mark that overhead liquid has been added to this tip if extra_volume > 0
+                    if extra_volume > 0:
+                        tip_state[pipette_name]["has_overhead"] = True
                     time.sleep(retention_time)
                     if touch_tip:
                         pipette.touch_tip(v_offset=-1)
@@ -1543,6 +1617,8 @@ class LiquidHandler:
                             pipette.blow_out(source.top())
                         elif blow_out_to == "destination":
                             pipette.blow_out(destination.top())
+                        # Reset tip state after blowout as air gap and overhead liquid are expelled
+                        tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                     
                     # Increment tip usage counter after successful aspiration-dispense cycle
                     if tip_reuse_limit is not None:
@@ -1570,8 +1646,12 @@ class LiquidHandler:
                         pipette.drop_tip()
                     else:
                         pipette.return_tip()
+                    # Reset tip state when tip is dropped/returned at end of operation
+                    tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
             except Exception as e:
                 logging.error(f"Error dropping/returning tip: {str(e)}")
+                # Reset tip state even if drop/return fails
+                tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
 
         failed_operations.sort(key=lambda x: x[3])
         return failed_operations
