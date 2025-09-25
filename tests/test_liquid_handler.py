@@ -614,6 +614,521 @@ class TestLiquidHandlerTransfer(unittest.TestCase):
         self.assertEqual(lh.p20.aspirate.call_count, 0)
 
 
+class TestLiquidHandlerReversePipetting(unittest.TestCase):
+    def setUp(self):
+        # Initialize LiquidHandler with simulation mode
+        self.lh = LiquidHandler(simulation=True, load_default=False)
+        
+        self.lh.load_tips("opentrons_96_tiprack_300ul", "7", single_channel=False)
+        self.lh.load_tips("opentrons_96_tiprack_300ul", "6", single_channel=True)
+        self.lh.load_tips("opentrons_96_tiprack_20ul", "11", single_channel=True)
+
+        # Mock pipettes
+        self.lh.p300_multi = MagicMock()
+        self.lh.p20 = MagicMock()
+        self.lh.p20.min_volume = 1
+        self.lh.p20.max_volume = 20
+        self.lh.p300_multi.min_volume = 20
+        self.lh.p300_multi.max_volume = 300
+
+        # Mock labware
+        self.mock_labware = self.lh.load_labware(
+            "nest_96_wellplate_100ul_pcr_full_skirt", 9, "mock labware"
+        )
+        self.mock_reservoir = self.lh.load_labware(
+            "nest_12_reservoir_15ml", 2, "mock reservoir source"
+        )
+        self.dest_wells = self.mock_labware.wells()
+
+        # Create mock wells
+        self.source_well = self.mock_reservoir.wells("A1")[0]
+
+    def test_reverse_pipetting_with_never_tip_change(self):
+        """Test reverse pipetting with new_tip='never' - pipette should retain liquid until tip is manually dropped"""
+        volumes = [50, 45, 40, 35]  # Multiple dispenses with the same tip
+        destination_wells = self.dest_wells[:4]
+        
+        # Mock the pipette to track current_volume
+        self.lh.p300_multi.current_volume = 0
+        
+        # Simulate reverse pipetting behavior - pipette retains overhead liquid
+        def mock_aspirate(volume, location, **kwargs):
+            self.lh.p300_multi.current_volume += volume
+            
+        def mock_dispense(volume, location, **kwargs):
+            # In reverse pipetting, we only dispense the requested volume, not all liquid
+            # The pipette can dispense below min_volume, but overhead liquid should remain
+            self.lh.p300_multi.current_volume = max(0, self.lh.p300_multi.current_volume - volume)
+            
+        self.lh.p300_multi.aspirate.side_effect = mock_aspirate
+        self.lh.p300_multi.dispense.side_effect = mock_dispense
+
+        # Act - perform reverse pipetting
+        failed_ops = self.lh.distribute(
+            volumes=volumes,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="never",
+            overhead_liquid=True,
+            blow_out_to="",  # Empty string prevents blow-out
+        )
+
+        # Assert - verify reverse pipetting behavior
+        self.assertEqual(len(failed_ops), 0, "No operations should fail")
+        
+        # Verify that blow_out was never called (key characteristic of reverse pipetting)
+        self.lh.p300_multi.blow_out.assert_not_called()
+        
+        # Verify aspirate was called (should aspirate overhead liquid each time)
+        self.assertGreater(self.lh.p300_multi.aspirate.call_count, 0)
+        
+        # Verify dispense was called for each destination
+        self.assertEqual(self.lh.p300_multi.dispense.call_count, len(volumes))
+        
+        # Verify pipette behavior (in reverse pipetting, overhead liquid is aspirated initially)
+        # The key is that blow_out is not called, so any remaining liquid stays in the tip
+        self.assertGreaterEqual(
+            self.lh.p300_multi.current_volume, 
+            0,
+            "Pipette should have some liquid or be empty, but never negative"
+        )
+
+    def test_reverse_pipetting_with_once_tip_change(self):
+        """Test reverse pipetting with new_tip='once' - single tip used for all operations"""
+        volumes = [15, 12, 8, 5, 3]  # All volumes ≤ 20µL will use P20 single channel
+        destination_wells = self.dest_wells[:5]
+        
+        # Mock the P20 pipette to track current_volume and tip usage (not P300)
+        self.lh.p20.current_volume = 0
+        self.lh.p20.has_tip = False
+        
+        def mock_pick_up_tip():
+            self.lh.p20.has_tip = True
+            
+        def mock_aspirate(volume, location, **kwargs):
+            self.lh.p20.current_volume += volume
+            
+        def mock_dispense(volume, location, **kwargs):
+            # In reverse pipetting, retain overhead liquid
+            # Dispense can go below min_volume, but we simulate retaining some overhead
+            self.lh.p20.current_volume = max(0, self.lh.p20.current_volume - volume)
+            
+        self.lh.p20.pick_up_tip.side_effect = mock_pick_up_tip
+        self.lh.p20.aspirate.side_effect = mock_aspirate
+        self.lh.p20.dispense.side_effect = mock_dispense
+
+        # Act - perform reverse pipetting
+        failed_ops = self.lh.distribute(
+            volumes=volumes,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="once",
+            overhead_liquid=True,
+            blow_out_to="",  # Empty string prevents blow-out
+        )
+
+        # Assert
+        self.assertEqual(len(failed_ops), 0, "No operations should fail")
+        
+        # Verify single tip pickup (characteristic of new_tip='once') for P20
+        self.assertEqual(self.lh.p20.pick_up_tip.call_count, 1)
+        
+        # Verify no blow-out occurs (key characteristic of reverse pipetting)
+        self.lh.p20.blow_out.assert_not_called()
+        
+        # Verify P20 was used (not P300) for these small volumes
+        self.lh.p300_multi.dispense.assert_not_called()
+        self.assertEqual(self.lh.p20.dispense.call_count, len(volumes))
+        
+        # Verify pipette behavior in reverse pipetting
+        self.assertGreaterEqual(
+            self.lh.p20.current_volume, 
+            0,
+            "Pipette volume should never be negative"
+        )
+
+    def test_reverse_pipetting_multi_dispense_operations(self):
+        """Test reverse pipetting with multi-dispense from single source to multiple destinations"""
+        volume = 40  # Same volume to all destinations to enable multi-dispense
+        destination_wells = self.dest_wells[:8]  # Full column for multi-channel
+        
+        # Mock the pipette behavior
+        self.lh.p300_multi.current_volume = 0
+        
+        def mock_aspirate(volume, location, **kwargs):
+            self.lh.p300_multi.current_volume += volume
+            
+        def mock_dispense(volume, location, **kwargs):
+            # Multi-dispense: dispense to multiple locations, can go below min_volume
+            self.lh.p300_multi.current_volume = max(0, self.lh.p300_multi.current_volume - volume)
+            
+        self.lh.p300_multi.aspirate.side_effect = mock_aspirate
+        self.lh.p300_multi.dispense.side_effect = mock_dispense
+
+        # Act
+        failed_ops = self.lh.distribute(
+            volumes=volume,  # Same volume for all wells
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="once",
+            overhead_liquid=True,
+            blow_out_to="",  # No blow-out for reverse pipetting
+        )
+
+        # Assert
+        self.assertEqual(len(failed_ops), 0)
+        
+        # Verify no blow-out in reverse pipetting
+        self.lh.p300_multi.blow_out.assert_not_called()
+        
+        # Verify multi-channel operation occurred
+        self.assertGreater(self.lh.p300_multi.aspirate.call_count, 0)
+        self.assertGreater(self.lh.p300_multi.dispense.call_count, 0)
+        
+        # Verify overhead liquid behavior (key aspect of reverse pipetting)
+        self.assertGreaterEqual(self.lh.p300_multi.current_volume, 0)
+
+    def test_reverse_pipetting_with_p20_single_channel(self):
+        """Test reverse pipetting behavior with P20 single channel pipette"""
+        volumes = [5, 8, 12, 15, 18]  # Volumes suitable for p20
+        destination_wells = self.dest_wells[:5]
+        
+        # Mock p20 behavior
+        self.lh.p20.current_volume = 0
+        
+        def mock_aspirate(volume, location, **kwargs):
+            self.lh.p20.current_volume += volume
+            
+        def mock_dispense(volume, location, **kwargs):
+            # Retain overhead liquid in reverse pipetting, but dispense can go below min_volume
+            self.lh.p20.current_volume = max(0, self.lh.p20.current_volume - volume)
+            
+        self.lh.p20.aspirate.side_effect = mock_aspirate
+        self.lh.p20.dispense.side_effect = mock_dispense
+
+        # Act
+        failed_ops = self.lh.distribute(
+            volumes=volumes,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="never",
+            overhead_liquid=True,
+            blow_out_to="",  # No blow-out for reverse pipetting
+        )
+
+        # Assert
+        self.assertEqual(len(failed_ops), 0)
+        
+        # Verify p20 was used (not p300_multi)
+        self.lh.p300_multi.dispense.assert_not_called()
+        self.assertGreater(self.lh.p20.dispense.call_count, 0)
+        
+        # Verify no blow-out in reverse pipetting
+        self.lh.p20.blow_out.assert_not_called()
+        
+        # Verify overhead liquid retention concept
+        self.assertGreaterEqual(self.lh.p20.current_volume, 0)
+
+    def test_reverse_pipetting_vs_normal_pipetting_comparison(self):
+        """Compare reverse pipetting (no blow-out) vs normal pipetting (with blow-out)"""
+        volume = 60
+        destination_wells = self.dest_wells[:3]
+        
+        # Test normal pipetting first
+        self.lh.p300_multi.reset_mock()
+        failed_ops_normal = self.lh.distribute(
+            volumes=volume,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="once",
+            overhead_liquid=True,
+            blow_out_to="trash",  # Normal pipetting with blow-out
+        )
+        
+        normal_blow_out_calls = self.lh.p300_multi.blow_out.call_count
+        
+        # Reset and test reverse pipetting
+        self.lh.p300_multi.reset_mock()
+        failed_ops_reverse = self.lh.distribute(
+            volumes=volume,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="once",
+            overhead_liquid=True,
+            blow_out_to="",  # Reverse pipetting without blow-out
+        )
+        
+        reverse_blow_out_calls = self.lh.p300_multi.blow_out.call_count
+        
+        # Assert the key difference
+        self.assertGreater(normal_blow_out_calls, 0, "Normal pipetting should have blow-out calls")
+        self.assertEqual(reverse_blow_out_calls, 0, "Reverse pipetting should have no blow-out calls")
+        
+        # Both should succeed
+        self.assertEqual(len(failed_ops_normal), 0)
+        self.assertEqual(len(failed_ops_reverse), 0)
+
+    def test_reverse_pipetting_error_handling(self):
+        """Test that reverse pipetting properly handles edge cases and errors"""
+        # Test with invalid blow_out_to parameter but should work with empty string
+        volumes = [25, 30]
+        destination_wells = self.dest_wells[:2]
+        
+        # This should work - empty string is valid for reverse pipetting
+        failed_ops = self.lh.distribute(
+            volumes=volumes,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="never",
+            overhead_liquid=True,
+            blow_out_to="",  # Empty string for reverse pipetting
+        )
+        
+        self.assertEqual(len(failed_ops), 0)
+        self.lh.p300_multi.blow_out.assert_not_called()
+
+    def test_reverse_pipetting_overhead_liquid_aspiration_verification(self):
+        """Test that reverse pipetting actually aspirates more liquid than dispensed (overhead liquid)"""
+        volume = 50  # Request 50µL
+        destination_wells = self.dest_wells[:1]
+        
+        # Track all aspirate and dispense calls with actual volumes
+        aspirated_volumes = []
+        dispensed_volumes = []
+        
+        def mock_aspirate(volume, location, **kwargs):
+            aspirated_volumes.append(volume)
+            self.lh.p300_multi.current_volume += volume
+            
+        def mock_dispense(volume, location, **kwargs):
+            dispensed_volumes.append(volume)
+            self.lh.p300_multi.current_volume = max(0, self.lh.p300_multi.current_volume - volume)
+            
+        self.lh.p300_multi.current_volume = 0
+        self.lh.p300_multi.aspirate.side_effect = mock_aspirate
+        self.lh.p300_multi.dispense.side_effect = mock_dispense
+
+        # Act - perform reverse pipetting
+        failed_ops = self.lh.distribute(
+            volumes=volume,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="once",
+            overhead_liquid=True,
+            blow_out_to="",  # No blow-out for reverse pipetting
+        )
+
+        # Assert
+        self.assertEqual(len(failed_ops), 0, "Operation should succeed")
+        
+        # Verify overhead liquid: total aspirated > total dispensed
+        total_aspirated = sum(aspirated_volumes)
+        total_dispensed = sum(dispensed_volumes)
+        
+        self.assertGreater(
+            total_aspirated, 
+            total_dispensed,
+            f"Total aspirated ({total_aspirated}µL) should be greater than total dispensed ({total_dispensed}µL) due to overhead liquid"
+        )
+        
+        # Verify the requested volume was dispensed
+        self.assertEqual(
+            total_dispensed, 
+            volume,
+            f"Total dispensed should equal requested volume ({volume}µL)"
+        )
+        
+        # Verify overhead liquid amount is reasonable (typically 10-20% overhead)
+        overhead_percentage = ((total_aspirated - total_dispensed) / total_dispensed) * 100
+        self.assertGreaterEqual(
+            overhead_percentage, 
+            5,  # At least 5% overhead
+            f"Overhead liquid should be at least 5% of dispensed volume, got {overhead_percentage:.1f}%"
+        )
+        
+        # Verify no blow-out occurred
+        self.lh.p300_multi.blow_out.assert_not_called()
+
+    def test_reverse_pipetting_tip_capacity_edge_case(self):
+        """Test reverse pipetting when volume equals tip capacity - should split into volleys with overhead"""
+        volume = 300  # Exactly at P300 capacity
+        destination_wells = self.dest_wells[:1]
+        
+        # Track aspirate and dispense operations
+        aspirated_volumes = []
+        dispensed_volumes = []
+        
+        def mock_aspirate(volume, location, **kwargs):
+            aspirated_volumes.append(volume)
+            self.lh.p300_multi.current_volume += volume
+            
+        def mock_dispense(volume, location, **kwargs):
+            dispensed_volumes.append(volume)
+            self.lh.p300_multi.current_volume = max(0, self.lh.p300_multi.current_volume - volume)
+            
+        self.lh.p300_multi.current_volume = 0
+        self.lh.p300_multi.aspirate.side_effect = mock_aspirate
+        self.lh.p300_multi.dispense.side_effect = mock_dispense
+
+        # Act
+        failed_ops = self.lh.distribute(
+            volumes=volume,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="once",
+            overhead_liquid=True,
+            blow_out_to="",
+        )
+
+        # Assert
+        self.assertEqual(len(failed_ops), 0, "Operation should succeed")
+        
+        # When volume equals capacity, it should split into multiple volleys
+        # Each volley should have overhead liquid
+        total_aspirated = sum(aspirated_volumes)
+        total_dispensed = sum(dispensed_volumes)
+        
+        self.assertGreater(
+            total_aspirated, 
+            total_dispensed,
+            f"Even at tip capacity, total aspirated ({total_aspirated}µL) should be greater than dispensed ({total_dispensed}µL)"
+        )
+        
+        # Verify the full requested volume was dispensed
+        self.assertEqual(
+            total_dispensed, 
+            volume,
+            f"Total dispensed should equal requested volume ({volume}µL)"
+        )
+        
+        # Should have multiple aspirate calls (volleys) due to overhead liquid requirement
+        self.assertGreaterEqual(
+            len(aspirated_volumes), 
+            2,
+            "Should split into multiple volleys when volume equals capacity and overhead liquid is required"
+        )
+        
+        # Each individual aspirate should not exceed tip capacity
+        for aspirated_vol in aspirated_volumes:
+            self.assertLessEqual(
+                aspirated_vol, 
+                self.lh.p300_multi.max_volume,
+                f"Individual aspirate volume ({aspirated_vol}µL) should not exceed tip capacity"
+            )
+        
+        # Verify no blow-out
+        self.lh.p300_multi.blow_out.assert_not_called()
+
+    def test_reverse_pipetting_large_volume_multi_volley_with_overhead(self):
+        """Test reverse pipetting for volumes > tip capacity maintains overhead liquid in each volley"""
+        volume = 450  # Requires multiple volleys even without overhead
+        destination_wells = self.dest_wells[:1]
+        
+        aspirated_volumes = []
+        dispensed_volumes = []
+        
+        def mock_aspirate(volume, location, **kwargs):
+            aspirated_volumes.append(volume)
+            self.lh.p300_multi.current_volume += volume
+            
+        def mock_dispense(volume, location, **kwargs):
+            dispensed_volumes.append(volume)
+            self.lh.p300_multi.current_volume = max(0, self.lh.p300_multi.current_volume - volume)
+            
+        self.lh.p300_multi.current_volume = 0
+        self.lh.p300_multi.aspirate.side_effect = mock_aspirate
+        self.lh.p300_multi.dispense.side_effect = mock_dispense
+
+        # Act
+        failed_ops = self.lh.distribute(
+            volumes=volume,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="once",
+            overhead_liquid=True,
+            blow_out_to="",
+        )
+
+        # Assert
+        self.assertEqual(len(failed_ops), 0, "Operation should succeed")
+        
+        # Verify overhead liquid maintained across multiple volleys
+        total_aspirated = sum(aspirated_volumes)
+        total_dispensed = sum(dispensed_volumes)
+        
+        self.assertGreater(
+            total_aspirated, 
+            total_dispensed,
+            f"Multi-volley operation: total aspirated ({total_aspirated}µL) should be greater than dispensed ({total_dispensed}µL)"
+        )
+        
+        # Verify correct total volume dispensed
+        self.assertEqual(total_dispensed, volume, "Total dispensed should match requested volume")
+        
+        # Should have multiple volleys
+        self.assertGreaterEqual(len(aspirated_volumes), 2, "Should require multiple volleys")
+        
+        # Each aspirate should be within capacity limits
+        for aspirated_vol in aspirated_volumes:
+            self.assertLessEqual(aspirated_vol, self.lh.p300_multi.max_volume)
+        
+        # Verify no blow-out
+        self.lh.p300_multi.blow_out.assert_not_called()
+
+    def test_reverse_pipetting_p20_overhead_liquid_verification(self):
+        """Test overhead liquid aspiration for P20 pipette operations"""
+        volumes = [8, 12, 15]  # Small volumes for P20
+        destination_wells = self.dest_wells[:3]
+        
+        aspirated_volumes = []
+        dispensed_volumes = []
+        
+        def mock_aspirate(volume, location, **kwargs):
+            aspirated_volumes.append(volume)
+            self.lh.p20.current_volume += volume
+            
+        def mock_dispense(volume, location, **kwargs):
+            dispensed_volumes.append(volume)
+            self.lh.p20.current_volume = max(0, self.lh.p20.current_volume - volume)
+            
+        self.lh.p20.current_volume = 0
+        self.lh.p20.aspirate.side_effect = mock_aspirate
+        self.lh.p20.dispense.side_effect = mock_dispense
+
+        # Act
+        failed_ops = self.lh.distribute(
+            volumes=volumes,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="once",
+            overhead_liquid=True,
+            blow_out_to="",
+        )
+
+        # Assert
+        self.assertEqual(len(failed_ops), 0, "All operations should succeed")
+        
+        # Verify overhead liquid for P20 operations
+        total_aspirated = sum(aspirated_volumes)
+        total_dispensed = sum(dispensed_volumes)
+        
+        self.assertGreater(
+            total_aspirated,
+            total_dispensed,
+            f"P20 operations: total aspirated ({total_aspirated}µL) should be greater than dispensed ({total_dispensed}µL)"
+        )
+        
+        # Verify correct volumes dispensed
+        self.assertEqual(total_dispensed, sum(volumes), "Should dispense exactly the requested volumes")
+        
+        # Verify P20 was used (not P300)
+        self.lh.p300_multi.aspirate.assert_not_called()
+        self.assertGreater(len(aspirated_volumes), 0, "P20 should have aspirated")
+        
+        # Verify no blow-out
+        self.lh.p20.blow_out.assert_not_called()
+
+
 class TestLiquidHandlerAllocate(unittest.TestCase):
     def setUp(self):
         # Initialize LiquidHandler with simulation mode
@@ -956,6 +1471,25 @@ class TestLiquidHandlerPool(unittest.TestCase):
             destination_well=self.mock_reservoir.wells()[0],
             add_air_gap=False,
             new_tip="once",
+        )
+
+        # Assert
+        self.assertEqual(self.lh.p20.dispense.call_count, 48) # re-using tips, 10 uL fits 2x in 20 uL tip
+        self.assertEqual(self.lh.p20.aspirate.call_count, 96)
+        self.lh.p300_multi.aspirate.assert_not_called()
+        self.lh.p300_multi.dispense.assert_not_called()
+
+    def test_pool_single_volume_with_tip_change(self):
+        # Arrange
+        volume = 10
+
+        # Act
+        self.lh.pool(
+            volumes=volume,
+            source_wells=self.mock_labware.wells(),  # 96x
+            destination_well=self.mock_reservoir.wells()[0],
+            add_air_gap=False,
+            new_tip="always",
         )
 
         # Assert

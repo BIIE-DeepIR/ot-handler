@@ -877,7 +877,7 @@ class LiquidHandler:
         - destination_wells (list of Well): The wells to which liquid will be dispensed.
         - new_tip (str, optional): Strategy for using tips. Options are "once", "always", "on aspiration", or "never".
         - touch_tip (bool, optional): Whether to touch the tip to the side of the well after aspirating or dispensing.
-        - blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination" or "trash". Empty string will result in no blow-out.
+        - blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination", "trash". Empty string will result in no blow-out, which can be used e.g. for reverse pipetting.
         - trash_tips (bool, optional): Whether to discard tips after use.
         - add_air_gap (bool, optional): Whether to add an air gap after aspiration.
         - overhead_liquid (bool, optional): Whether to aspirate extra liquid to ensure complete transfer.
@@ -1107,8 +1107,9 @@ class LiquidHandler:
                                 allocated_indexes.extend(idxs)
                                 continue
                             # No multi-dispense if tip change is set as "always", no-multi aspiration if if tip change set as "always" or "on aspiration"
+                            effective_max_vol = max_vol - (pipette.min_volume if overhead_liquid else 0)
                             if (
-                                set_volume + volume < max_vol
+                                set_volume + volume <= effective_max_vol
                                 and new_tip != "always"
                                 and (
                                     (p_idx == 1 and mix_after is False)
@@ -1122,8 +1123,9 @@ class LiquidHandler:
                                 if current_set:
                                     grouped_sets[p_idx].append(current_set)
                                     current_set = []
-                                if volume > max_vol:
-                                    sets = math.ceil(volume / max_vol)
+                                effective_max_vol_single = max_vol - (pipette.min_volume if overhead_liquid else 0)
+                                if volume > effective_max_vol_single:
+                                    sets = math.ceil(volume / effective_max_vol_single)
                                     set_volume = volume / sets
                                     for i in range(sets):
                                         grouped_sets[p_idx].append(
@@ -1142,8 +1144,9 @@ class LiquidHandler:
             for op in steps:
                 if op[0] not in allocated_indexes:
                     idx, source, destination, volume = op
-                    if volume > max_vol:
-                        sets = math.ceil(volume / max_vol)
+                    effective_max_vol_single = max_vol - (pipette.min_volume if overhead_liquid else 0)
+                    if volume > effective_max_vol_single:
+                        sets = math.ceil(volume / effective_max_vol_single)
                         sub_volume = volume / sets
                         for _ in range(sets):
                             orphan_operations.append([source, destination, sub_volume, idx])
@@ -1198,7 +1201,7 @@ class LiquidHandler:
                 source_well = aspiration_set[0][0]
                 set_volume = sum([op[2] for op in aspiration_set])
                 extra_volume = (
-                    min(pipette.min_volume, max(0, max_vol - set_volume)) if overhead_liquid else 0
+                    pipette.min_volume if overhead_liquid and set_volume + pipette.min_volume <= max_vol else 0
                 )
                 air_gap = (
                     min(pipette.min_volume * 2, 20, max(0, max_vol - set_volume - extra_volume))
@@ -1409,7 +1412,7 @@ class LiquidHandler:
                     continue
 
                 extra_volume = (
-                    min(pipette.min_volume, max(0, max_vol - volume)) if overhead_liquid else 0
+                    pipette.min_volume if overhead_liquid and volume + pipette.min_volume <= max_vol else 0
                 )
                 air_gap = (
                     min(pipette.min_volume * 2, 20, max(0, max_vol - volume - extra_volume))
