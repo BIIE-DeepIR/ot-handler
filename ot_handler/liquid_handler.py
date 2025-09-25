@@ -1330,12 +1330,17 @@ class LiquidHandler:
                     if pipette.current_volume:
                         if blow_out_to == "trash":
                             pipette.blow_out(self.trash)
+                            # Reset tip state after blowout as air gap and overhead liquid are expelled
+                            tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         elif blow_out_to == "source":
                             pipette.blow_out(source_well.top())
+                            # Reset tip state after blowout as air gap and overhead liquid are expelled
+                            tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         elif blow_out_to == "destination":
                             pipette.blow_out(destination_well.top())
-                        # Reset tip state after blowout as air gap and overhead liquid are expelled
-                        tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
+                            # Reset tip state after blowout as air gap and overhead liquid are expelled
+                            tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
+                        # If blow_out_to is empty string, no blowout occurs, so tip state is preserved
                     
                     # Increment tip usage counter after successful aspiration-dispense cycle
                     if tip_reuse_limit is not None:
@@ -1474,12 +1479,17 @@ class LiquidHandler:
                     if pipette.current_volume:
                         if blow_out_to == "trash":
                             pipette.blow_out(self.trash)
+                            # Reset tip state after blowout as air gap and overhead liquid are expelled
+                            tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         elif blow_out_to == "source":
                             pipette.blow_out(source.top())
+                            # Reset tip state after blowout as air gap and overhead liquid are expelled
+                            tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         elif blow_out_to == "destination":
                             pipette.blow_out(destination_well.top())
-                        # Reset tip state after blowout as air gap and overhead liquid are expelled
-                        tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
+                            # Reset tip state after blowout as air gap and overhead liquid are expelled
+                            tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
+                        # If blow_out_to is empty string, no blowout occurs, so tip state is preserved
                     
                     # Increment tip usage counter after successful aspiration-dispense cycle
                     if tip_reuse_limit is not None:
@@ -1613,12 +1623,17 @@ class LiquidHandler:
                     if pipette.current_volume:
                         if blow_out_to == "trash":
                             pipette.blow_out(self.trash)
+                            # Reset tip state after blowout as air gap and overhead liquid are expelled
+                            tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         elif blow_out_to == "source":
                             pipette.blow_out(source.top())
+                            # Reset tip state after blowout as air gap and overhead liquid are expelled
+                            tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         elif blow_out_to == "destination":
                             pipette.blow_out(destination.top())
-                        # Reset tip state after blowout as air gap and overhead liquid are expelled
-                        tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
+                            # Reset tip state after blowout as air gap and overhead liquid are expelled
+                            tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
+                        # If blow_out_to is empty string, no blowout occurs, so tip state is preserved
                     
                     # Increment tip usage counter after successful aspiration-dispense cycle
                     if tip_reuse_limit is not None:
