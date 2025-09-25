@@ -1259,6 +1259,7 @@ class LiquidHandler:
                         allocated_indexes.extend(idxs)
                     continue
 
+                last_index = 0
                 try:
                     # Perform aspiration with air gap
                     if air_gap:
@@ -1272,7 +1273,6 @@ class LiquidHandler:
                         pipette.touch_tip(v_offset=-1)
 
                     # Perform dispenses
-                    last_index = 0
                     for last_index, (source, destination_well, volume, orig_idx) in enumerate(
                         aspiration_set
                     ):
@@ -1586,6 +1586,7 @@ class LiquidHandler:
         trash_tips: bool = True,
         add_air_gap: bool = True,
         overhead_liquid: bool = True,
+        tip_reuse_limit: int = None,
         **kwargs,
     ):
         """
@@ -1608,6 +1609,8 @@ class LiquidHandler:
             trash_tips (bool, optional): Whether to discard the tip to the trash after use (True) or return to tip box (False). Default is True.
             add_air_gap (bool, optional): Whether to add an air gap before aspirating the liquid. Default is True.
             overhead_liquid (bool, optional): Whether to aspirate extra liquid for more accurate dispensing, but consumes more source liquid. Default is True.
+            tip_reuse_limit (int, optional): Maximum number of aspiration-dispense cycles before forcing a tip change
+                even if new_tip is "never" or "once". Default: None (no limit enforced).
             **kwargs: Additional keyword arguments to pass to the underlying transfer method. Such as:
                 - mix_after (tuple, optional): First element is repetitions and second element is volume of mixing at the destination well after dispense. False when no mixing needed. Will block multi-dispense mode.
 
@@ -1662,6 +1665,7 @@ class LiquidHandler:
             trash_tips=trash_tips,
             add_air_gap=add_air_gap,
             overhead_liquid=overhead_liquid,
+            tip_reuse_limit=tip_reuse_limit,
             **kwargs,
         )
 
