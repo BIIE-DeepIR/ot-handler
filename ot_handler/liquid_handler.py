@@ -1210,7 +1210,7 @@ class LiquidHandler:
                     pipette.min_volume if overhead_liquid and set_volume + pipette.min_volume <= max_vol else 0
                 )
                 air_gap = (
-                    min(pipette.min_volume * 2, 20, max(0, max_vol - set_volume - extra_volume))
+                    min(pipette.min_volume, 20, max(0, max_vol - set_volume - extra_volume))
                     if add_air_gap
                     else 0
                 )
@@ -1342,7 +1342,7 @@ class LiquidHandler:
                 destination_well = dispense_set[0][1]
                 set_volume = sum([op[2] for op in dispense_set])
                 air_gap = (
-                    min(pipette.min_volume * 2, max(0, max_vol - set_volume)) if add_air_gap else 0
+                    min(pipette.min_volume, 20, max(0, max_vol - set_volume)) if add_air_gap else 0
                 )
 
                 try:
@@ -1459,7 +1459,7 @@ class LiquidHandler:
                     pipette.min_volume if overhead_liquid and volume + pipette.min_volume <= max_vol else 0
                 )
                 air_gap = (
-                    min(pipette.min_volume * 2, 20, max(0, max_vol - volume - extra_volume))
+                    min(pipette.min_volume, 20, max(0, max_vol - volume - extra_volume))
                     if add_air_gap
                     else 0
                 )
