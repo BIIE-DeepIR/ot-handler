@@ -421,6 +421,306 @@ class TestLiquidHandlerDistribute(unittest.TestCase):
         self.lh.p300_multi.dispense.assert_called()
         self.lh.p20.dispense.assert_not_called()
 
+    def test_blow_out_source_after_pipetting(self):
+        """Test that blow-out to source happens when using source_after_pipetting setting"""
+        # Arrange
+        volumes = [50, 60, 70]  # Three different volumes
+        destination_wells = self.dest_wells[:3]
+        blow_out_calls = []
+        
+        # Mock the pipette behavior to track blow_out calls and locations
+        def mock_blow_out(location):
+            blow_out_calls.append(location)
+            # Reset current_volume when blowing out
+            self.lh.p300_multi.current_volume = 0
+            
+        def mock_aspirate(volume, location, **kwargs):
+            # Simulate aspirating liquid with overhead
+            self.lh.p300_multi.current_volume = volume + 20  # Add overhead liquid
+            
+        def mock_dispense(volume, location, **kwargs):
+            # Simulate dispensing - remove the dispensed volume but keep overhead
+            self.lh.p300_multi.current_volume = max(0, self.lh.p300_multi.current_volume - volume)
+            
+        def mock_drop_tip():
+            # Reset volume when dropping tip
+            self.lh.p300_multi.current_volume = 0
+            
+        # Set up mock side effects
+        self.lh.p300_multi.blow_out.side_effect = mock_blow_out
+        self.lh.p300_multi.aspirate.side_effect = mock_aspirate
+        self.lh.p300_multi.dispense.side_effect = mock_dispense
+        self.lh.p300_multi.drop_tip.side_effect = mock_drop_tip
+        self.lh.p300_multi.current_volume = 0  # Start empty
+        
+        # Act - perform distribute with source_after_pipetting and always new tip
+        # This should trigger blow-out to source before each tip change
+        failed_ops = self.lh.distribute(
+            volumes=volumes,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="always",  # Forces tip change before each operation
+            overhead_liquid=True,
+            add_air_gap=True,
+            blow_out_to="source_after_pipetting",
+        )
+        
+        # Assert
+        self.assertEqual(len(failed_ops), 0, "No operations should fail")
+        
+        # Verify that blow_out was called before each tip change
+        # With new_tip="always", there should be blow-out calls before dropping tips
+        self.assertGreater(len(blow_out_calls), 0, "Blow-out should be called when changing tips")
+        
+        # Verify all blow-out calls were to the source well top
+        for location in blow_out_calls:
+            self.assertEqual(location, self.source_well.top(), 
+                           "All blow-out calls should be to source well top")
+        
+        # Verify that aspirate and dispense were called for each volume
+        self.assertEqual(self.lh.p300_multi.aspirate.call_count, len(volumes))
+        self.assertEqual(self.lh.p300_multi.dispense.call_count, len(volumes))
+        
+        # Verify drop_tip was called (should happen for each operation with new_tip="always")
+        self.assertGreater(self.lh.p300_multi.drop_tip.call_count, 0)
+
+    def test_blow_out_source_after_pipetting_with_once(self):
+        """Test source_after_pipetting behavior with new_tip='once' - should blow out at the end"""
+        # Arrange
+        volumes = [50, 60, 70]
+        destination_wells = self.dest_wells[:3]
+        blow_out_calls = []
+        pipette_volume_history = []
+        
+        def mock_blow_out(location):
+            blow_out_calls.append(location)
+            pipette_volume_history.append(f"blow_out: volume={self.lh.p300_multi.current_volume}")
+            self.lh.p300_multi.current_volume = 0
+            
+        def mock_aspirate(volume, location, **kwargs):
+            # Add overhead liquid and air gap
+            overhead = 20 if kwargs.get('overhead_liquid', True) else 0
+            air_gap = 20 if kwargs.get('add_air_gap', True) else 0  
+            total_aspirated = volume + overhead + air_gap
+            self.lh.p300_multi.current_volume += total_aspirated
+            pipette_volume_history.append(f"aspirate: {volume}+{overhead}+{air_gap}={total_aspirated}, total={self.lh.p300_multi.current_volume}")
+            
+        def mock_dispense(volume, location, **kwargs):
+            # Dispense only the requested volume, keep overhead and air gap
+            self.lh.p300_multi.current_volume -= volume
+            pipette_volume_history.append(f"dispense: {volume}, remaining={self.lh.p300_multi.current_volume}")
+            
+        def mock_drop_tip():
+            pipette_volume_history.append(f"drop_tip: volume was {self.lh.p300_multi.current_volume}")
+            # Don't immediately set has_tip to False here - let the blow_out happen first
+            self.lh.p300_multi.current_volume = 0
+            
+        def mock_pick_up_tip():
+            pipette_volume_history.append("pick_up_tip")
+            # Don't modify has_tip here either - we want to track when the real logic tries to access it
+            
+        def mock_return_tip():
+            pipette_volume_history.append(f"return_tip: volume was {self.lh.p300_multi.current_volume}")
+            # Don't immediately set has_tip to False here - let the blow_out happen first
+            self.lh.p300_multi.current_volume = 0
+            
+        # Set up proper has_tip tracking
+        has_tip_state = {"p300_multi": False, "p20": False}
+        
+        def mock_pick_up_tip_for_pipette(pipette_name):
+            def mock_func():
+                pipette_volume_history.append(f"{pipette_name}_pick_up_tip")
+                has_tip_state[pipette_name] = True
+            return mock_func
+            
+        def mock_drop_tip_for_pipette(pipette_name):
+            def mock_func():
+                import traceback
+                pipette = getattr(self.lh, pipette_name)
+                # This should only be called AFTER blow_out if there was liquid
+                if pipette.current_volume > 0:
+                    stack_trace = ''.join(traceback.format_stack()[-3:-1])  # Get the last 2 frames
+                    pipette_volume_history.append(f"ERROR: {pipette_name}_drop_tip called with volume {pipette.current_volume}")
+                    pipette_volume_history.append(f"Call stack: {stack_trace.strip()}")
+                else:
+                    pipette_volume_history.append(f"{pipette_name}_drop_tip: volume was {pipette.current_volume}")
+                pipette.current_volume = 0
+                has_tip_state[pipette_name] = False
+            return mock_func
+            
+        def mock_return_tip_for_pipette(pipette_name):
+            def mock_func():
+                pipette = getattr(self.lh, pipette_name)
+                # This should only be called AFTER blow_out if there was liquid
+                if pipette.current_volume > 0:
+                    pipette_volume_history.append(f"ERROR: {pipette_name}_return_tip called with volume {pipette.current_volume} - should have blown out first!")
+                else:
+                    pipette_volume_history.append(f"{pipette_name}_return_tip: volume was {pipette.current_volume}")
+                pipette.current_volume = 0
+                has_tip_state[pipette_name] = False
+            return mock_func
+
+        # Set up mocks for both possible pipettes
+        for pipette_name, pipette in [("p300_multi", self.lh.p300_multi), ("p20", self.lh.p20)]:
+            pipette.blow_out.side_effect = mock_blow_out
+            pipette.aspirate.side_effect = mock_aspirate
+            pipette.dispense.side_effect = mock_dispense
+            pipette.drop_tip.side_effect = mock_drop_tip_for_pipette(pipette_name)
+            pipette.pick_up_tip.side_effect = mock_pick_up_tip_for_pipette(pipette_name)
+            pipette.return_tip.side_effect = mock_return_tip_for_pipette(pipette_name)
+            pipette.current_volume = 0
+            # Use a property that returns the tracked state
+            type(pipette).has_tip = property(lambda self, name=pipette_name: has_tip_state[name])
+        
+        # Act - with new_tip="once", tip should only be changed at the end
+
+        failed_ops = self.lh.distribute(
+            volumes=volumes,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="once",
+            overhead_liquid=True,
+            add_air_gap=True,
+            blow_out_to="source_after_pipetting",
+            trash_tips=False,  # Return tip instead of dropping to see if this affects the blow-out
+        )
+        
+        # Debug: Print the history if test fails
+        if len(blow_out_calls) == 0:
+            print(f"Volume history: {pipette_volume_history}")
+            print(f"Blow out calls: {blow_out_calls}")
+            print(f"Final p300_multi volume: {self.lh.p300_multi.current_volume}")
+            print(f"Final p300_multi has tip: {self.lh.p300_multi.has_tip}")
+            print(f"Final p20 volume: {self.lh.p20.current_volume}")
+            print(f"Final p20 has tip: {self.lh.p20.has_tip}")
+            print(f"P300_multi aspirate call count: {self.lh.p300_multi.aspirate.call_count}")
+            print(f"P20 aspirate call count: {self.lh.p20.aspirate.call_count}")
+        
+        # Assert
+        self.assertEqual(len(failed_ops), 0, "No operations should fail")
+        
+        # With new_tip="once", blow-out should happen at the end of all transfers
+        # The exact number depends on implementation, but there should be at least one
+        self.assertGreaterEqual(len(blow_out_calls), 1, 
+                               "Should blow out at least once at the end of transfers")
+        
+        # All blow-out calls should be to source well
+        for location in blow_out_calls:
+            self.assertEqual(location, self.source_well.top(), 
+                           "Blow-out should be to source well top")
+
+    def test_blow_out_source_after_pipetting_vs_regular_source(self):
+        """Test that source_after_pipetting behaves differently from regular 'source' blow-out"""
+        # Arrange
+        volumes = [50, 60]
+        destination_wells = self.dest_wells[:2]
+        
+        # Track blow-out calls for source_after_pipetting
+        source_after_pipetting_blow_outs = []
+        def mock_blow_out_after_pipetting(location):
+            source_after_pipetting_blow_outs.append(location)
+            self.lh.p300_multi.current_volume = 0
+            
+        def mock_aspirate(volume, location, **kwargs):
+            self.lh.p300_multi.current_volume = volume + 20
+            
+        def mock_dispense(volume, location, **kwargs):
+            self.lh.p300_multi.current_volume = max(0, self.lh.p300_multi.current_volume - volume)
+            
+        # Test with source_after_pipetting first
+        self.lh.p300_multi.blow_out.side_effect = mock_blow_out_after_pipetting
+        self.lh.p300_multi.aspirate.side_effect = mock_aspirate
+        self.lh.p300_multi.dispense.side_effect = mock_dispense
+        self.lh.p300_multi.current_volume = 0
+        
+        self.lh.distribute(
+            volumes=volumes,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="never",  # No tip changes, but source_after_pipetting should still blow out at end
+            blow_out_to="source_after_pipetting",
+        )
+        
+        # Reset mocks for second test
+        self.lh.p300_multi.reset_mock()
+        
+        # Track blow-out calls for regular source
+        regular_source_blow_outs = []
+        def mock_blow_out_regular(location):
+            regular_source_blow_outs.append(location)
+            self.lh.p300_multi.current_volume = 0
+            
+        self.lh.p300_multi.blow_out.side_effect = mock_blow_out_regular
+        self.lh.p300_multi.aspirate.side_effect = mock_aspirate
+        self.lh.p300_multi.dispense.side_effect = mock_dispense
+        self.lh.p300_multi.current_volume = 0
+        
+        self.lh.distribute(
+            volumes=volumes,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="never",
+            blow_out_to="source",  # Regular source blow-out
+        )
+        
+        # Assert
+        # With new_tip="never", source_after_pipetting should still blow out at the end of transfers
+        self.assertGreater(len(source_after_pipetting_blow_outs), 0, 
+                          "source_after_pipetting should blow out at the end of transfers even without tip changes")
+        
+        # Regular source should blow out after each operation with remaining liquid
+        self.assertGreater(len(regular_source_blow_outs), 0, 
+                          "Regular source blow-out should occur with remaining liquid")
+
+    def test_blow_out_source_after_pipetting_with_never(self):
+        """Test that source_after_pipetting blows out at the end even with new_tip='never'"""
+        # Arrange
+        volumes = [50, 60]
+        destination_wells = self.dest_wells[:2]
+        blow_out_calls = []
+        
+        def mock_blow_out(location):
+            blow_out_calls.append(location)
+            self.lh.p300_multi.current_volume = 0
+            
+        def mock_aspirate(volume, location, **kwargs):
+            # Accumulate volume with overhead
+            current = getattr(self.lh.p300_multi, 'current_volume', 0)
+            self.lh.p300_multi.current_volume = current + volume + 20
+            
+        def mock_dispense(volume, location, **kwargs):
+            # Dispense only the requested volume, keep overhead
+            self.lh.p300_multi.current_volume = max(0, self.lh.p300_multi.current_volume - volume)
+            
+        # Set up mocks
+        self.lh.p300_multi.blow_out.side_effect = mock_blow_out
+        self.lh.p300_multi.aspirate.side_effect = mock_aspirate
+        self.lh.p300_multi.dispense.side_effect = mock_dispense
+        self.lh.p300_multi.current_volume = 0
+        
+        # Act - with new_tip="never", tip is never changed but should still blow out at end
+        failed_ops = self.lh.distribute(
+            volumes=volumes,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="never",  # No tip changes at all
+            overhead_liquid=True,
+            add_air_gap=True,
+            blow_out_to="source_after_pipetting",
+        )
+        
+        # Assert
+        self.assertEqual(len(failed_ops), 0, "No operations should fail")
+        
+        # Should blow out at the end of all transfers, even without tip changes
+        self.assertGreater(len(blow_out_calls), 0, 
+                          "Should blow out at end of transfers even when tips are never changed")
+        
+        # All blow-out calls should be to source well
+        for location in blow_out_calls:
+            self.assertEqual(location, self.source_well.top(), 
+                           "Blow-out should be to source well top")
+
 
 class TestLiquidHandlerTransfer(unittest.TestCase):
     def setUp(self):

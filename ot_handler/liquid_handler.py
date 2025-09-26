@@ -879,7 +879,7 @@ class LiquidHandler:
         - destination_wells (list of Well): The wells to which liquid will be dispensed.
         - new_tip (str, optional): Strategy for using tips. Options are "once", "always", "on aspiration", or "never".
         - touch_tip (bool, optional): Whether to touch the tip to the side of the well after aspirating or dispensing.
-        - blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination", "trash", or "source_on_tip_change". Empty string will result in no blow-out, which can be used e.g. for reverse pipetting. The "source_on_tip_change" option keeps overhead liquid and air gap through operations and only blows out to source when the tip is about to be changed or dropped.
+        - blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination", "trash", or "source_after_pipetting". Empty string will result in no blow-out, which can be used e.g. for reverse pipetting. The "source_after_pipetting" option keeps overhead liquid and air gap through operations and blows out to source when the tip is about to be changed or dropped, and also at the end of all transfers.
         - trash_tips (bool, optional): Whether to discard tips after use.
         - add_air_gap (bool, optional): Whether to add an air gap after aspiration. When enabled, the air gap volume equals the minimum pipette volume and reduces the effective maximum volume.
         - overhead_liquid (bool, optional): Whether to aspirate extra liquid to ensure complete transfer.
@@ -932,8 +932,8 @@ class LiquidHandler:
             else destination_wells * operations_length
         )
         # Parameter validation
-        assert blow_out_to in ["source", "destination", "trash", "source_on_tip_change", ""], (
-            "The parameter blow_out_to must always be defined and one of source, destination, trash, source_on_tip_change or empty string. Blow out happens only if there's air gap or overhead liquid"
+        assert blow_out_to in ["source", "destination", "trash", "source_after_pipetting", ""], (
+            "The parameter blow_out_to must always be defined and one of source, destination, trash, source_after_pipetting or empty string. Blow out happens only if there's air gap or overhead liquid"
         )
 
         # Check for volumes exceeding effective pipette max volume (accounting for overhead liquid and air gap)
@@ -1230,8 +1230,8 @@ class LiquidHandler:
                     match new_tip:
                         case "always" | "on aspiration":
                             if pipette.has_tip:
-                                # For source_on_tip_change, blow out to source before dropping/returning tip
-                                if blow_out_to == "source_on_tip_change" and pipette.current_volume:
+                                # For source_after_pipetting, blow out to source before dropping/returning tip
+                                if blow_out_to == "source_after_pipetting" and pipette.current_volume:
                                     pipette.blow_out(source_well.top())
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                                 # Reset tip state when tip is dropped/returned
@@ -1243,8 +1243,8 @@ class LiquidHandler:
                         case "once":
                             if first_round or force_tip_change:
                                 if pipette.has_tip:
-                                    # For source_on_tip_change, blow out to source before dropping tip
-                                    if blow_out_to == "source_on_tip_change" and pipette.current_volume:
+                                    # For source_after_pipetting, blow out to source before dropping tip
+                                    if blow_out_to == "source_after_pipetting" and pipette.current_volume:
                                         pipette.blow_out(source_well.top())
                                     pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
                                     # Reset tip state when tip is dropped
@@ -1259,8 +1259,8 @@ class LiquidHandler:
                         case _:
                             # Keep the tips already attached, otherwise pick up fresh ones
                             if force_tip_change:
-                                # For source_on_tip_change, blow out to source before dropping/returning tip
-                                if blow_out_to == "source_on_tip_change" and pipette.current_volume:
+                                # For source_after_pipetting, blow out to source before dropping/returning tip
+                                if blow_out_to == "source_after_pipetting" and pipette.current_volume:
                                     pipette.blow_out(source_well.top())
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                                 # Reset tip state when tip is dropped/returned
@@ -1357,7 +1357,7 @@ class LiquidHandler:
                             pipette.blow_out(destination_well.top())
                             # Reset tip state after blowout as air gap and overhead liquid are expelled
                             tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
-                        elif blow_out_to in ["source_on_tip_change", ""]:
+                        elif blow_out_to in ["source_after_pipetting", ""]:
                             # Don't blow out here - keep overhead liquid and air gap for reuse
                             pass
                         # If blow_out_to is empty string, no blowout occurs, so tip state is preserved
@@ -1407,8 +1407,8 @@ class LiquidHandler:
                     match new_tip:
                         case "always" | "on aspiration":
                             if pipette.has_tip:
-                                # For source_on_tip_change, blow out to source before dropping/returning tip
-                                if blow_out_to == "source_on_tip_change" and pipette.current_volume:
+                                # For source_after_pipetting, blow out to source before dropping/returning tip
+                                if blow_out_to == "source_after_pipetting" and pipette.current_volume:
                                     # Use the first source well from the dispense set
                                     pipette.blow_out(dispense_set[0][0].top())
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
@@ -1421,8 +1421,8 @@ class LiquidHandler:
                         case "once":
                             if first_round or force_tip_change:
                                 if pipette.has_tip:
-                                    # For source_on_tip_change, blow out to source before dropping tip
-                                    if blow_out_to == "source_on_tip_change" and pipette.current_volume:
+                                    # For source_after_pipetting, blow out to source before dropping tip
+                                    if blow_out_to == "source_after_pipetting" and pipette.current_volume:
                                         pipette.blow_out(dispense_set[0][0].top())
                                     pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
                                     # Reset tip state when tip is dropped
@@ -1437,8 +1437,8 @@ class LiquidHandler:
                         case _:
                             # Keep the tips already attached, otherwise pick up fresh ones
                             if force_tip_change:
-                                # For source_on_tip_change, blow out to source before dropping/returning tip
-                                if blow_out_to == "source_on_tip_change" and pipette.current_volume:
+                                # For source_after_pipetting, blow out to source before dropping/returning tip
+                                if blow_out_to == "source_after_pipetting" and pipette.current_volume:
                                     pipette.blow_out(dispense_set[0][0].top())
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                                 # Reset tip state when tip is dropped/returned
@@ -1520,9 +1520,9 @@ class LiquidHandler:
                             pipette.blow_out(destination_well.top())
                             # Reset tip state after blowout as air gap and overhead liquid are expelled
                             tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
-                        elif blow_out_to in ["source_on_tip_change", ""]:
+                        elif blow_out_to in ["source_after_pipetting", ""]:
                             # Don't blow out here - keep overhead liquid and air gap for reuse
-                            # Blow out will happen only when tip is about to be changed/dropped (for source_on_tip_change)
+                            # Blow out will happen only when tip is about to be changed/dropped (for source_after_pipetting)
                             # If blow_out_to is empty string, no blowout occurs, so tip state is preserved
                             pass
                     
@@ -1562,8 +1562,8 @@ class LiquidHandler:
                     match new_tip:
                         case "always" | "on aspiration":
                             if pipette.has_tip:
-                                # For source_on_tip_change, blow out to source before dropping/returning tip
-                                if blow_out_to == "source_on_tip_change" and pipette.current_volume:
+                                # For source_after_pipetting, blow out to source before dropping/returning tip
+                                if blow_out_to == "source_after_pipetting" and pipette.current_volume:
                                     pipette.blow_out(source.top())
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                                 # Reset tip state when tip is dropped/returned
@@ -1575,8 +1575,8 @@ class LiquidHandler:
                         case "once":
                             if first_round or force_tip_change:
                                 if pipette.has_tip:
-                                    # For source_on_tip_change, blow out to source before dropping tip
-                                    if blow_out_to == "source_on_tip_change" and pipette.current_volume:
+                                    # For source_after_pipetting, blow out to source before dropping tip
+                                    if blow_out_to == "source_after_pipetting" and pipette.current_volume:
                                         pipette.blow_out(source.top())
                                     pipette.drop_tip()  # Tips are trashed always, because they are leftovers from previous operations
                                     # Reset tip state when tip is dropped
@@ -1591,8 +1591,8 @@ class LiquidHandler:
                         case _:
                             # Keep the tips already attached, otherwise pick up fresh ones
                             if force_tip_change:
-                                # For source_on_tip_change, blow out to source before dropping/returning tip
-                                if blow_out_to == "source_on_tip_change" and pipette.current_volume:
+                                # For source_after_pipetting, blow out to source before dropping/returning tip
+                                if blow_out_to == "source_after_pipetting" and pipette.current_volume:
                                     pipette.blow_out(source.top())
                                 pipette.drop_tip() if trash_tips or single_tip_mode else pipette.return_tip()
                                 # Reset tip state when tip is dropped/returned
@@ -1676,9 +1676,9 @@ class LiquidHandler:
                             pipette.blow_out(destination.top())
                             # Reset tip state after blowout as air gap and overhead liquid are expelled
                             tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
-                        elif blow_out_to in ["source_on_tip_change", ""]:
+                        elif blow_out_to in ["source_after_pipetting", ""]:
                             # Don't blow out here - keep overhead liquid and air gap for reuse
-                            # Blow out will happen only when tip is about to be changed/dropped (for source_on_tip_change)
+                            # Blow out will happen only when tip is about to be changed/dropped (for source_after_pipetting)
                             # If blow_out_to is empty string, no blowout occurs, so tip state is preserved
                             pass
                     
@@ -1694,18 +1694,11 @@ class LiquidHandler:
                     allocated_indexes.extend(idxs)
                     continue
 
-            # All liquid handling is done
-            try:
-                if single_tip_mode:
-                    self._set_single_tip_mode(False)
-            except Exception as e:
-                logging.error(f"Error resetting single tip mode: {str(e)}")
-
             # Clean up tips for this pipette at the end of its operations
             if pipette_name not in out_of_tips_pipettes and pipette.has_tip:
                 try:
-                    # For source_on_tip_change, blow out to source before dropping/returning tip
-                    if blow_out_to == "source_on_tip_change" and pipette.current_volume:
+                    # For source_after_pipetting, blow out to source at the end of transfers, regardless of tip handling
+                    if blow_out_to == "source_after_pipetting" and pipette.current_volume:
                         # Find the last source well used by this pipette
                         last_source_well = None
                         for step in reversed(steps):
@@ -1722,12 +1715,19 @@ class LiquidHandler:
                             pipette.drop_tip()
                         else:
                             pipette.return_tip()
-                        # Reset tip state when tip is dropped/returned at end of operation
+                        # Reset tip state when tip is dropped/returned
                         tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                 except Exception as e:
                     logging.error(f"Error dropping/returning tip: {str(e)}")
                     # Reset tip state even if drop/return fails
                     tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
+
+            # All liquid handling is done
+            try:
+                if single_tip_mode:
+                    self._set_single_tip_mode(False)
+            except Exception as e:
+                logging.error(f"Error resetting single tip mode: {str(e)}")
 
         failed_operations.sort(key=lambda x: x[3])
         return failed_operations
@@ -1762,7 +1762,7 @@ class LiquidHandler:
             destination_wells (list of Well): The wells to which the liquid will be distributed.
             new_tip (str, optional): When to use a new tip. Options are: "always", "once", "never", "on aspiration". Default is "once".
             touch_tip (bool, optional): Whether to touch the tip to the side of the well after dispensing. Default is False.
-            blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination" or "trash". Empty string will result in no blow-out.
+            blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination", "trash", or "source_after_pipetting". Empty string will result in no blow-out. The "source_after_pipetting" option keeps overhead liquid and air gap through operations and blows out to source when the tip is about to be changed or dropped, and also at the end of all transfers.
             trash_tips (bool, optional): Whether to discard the tip to the trash after use (True) or return to tip box (False). Default is True.
             add_air_gap (bool, optional): Whether to add an air gap before aspirating the liquid. Default is True.
             overhead_liquid (bool, optional): Whether to aspirate extra liquid for more accurate dispensing, but consumes more source liquid. Default is True.
@@ -1927,7 +1927,7 @@ class LiquidHandler:
             sample_count (int, optional): The number of samples to stamp. Defaults to 0, which stamps all samples.
             new_tip (str, optional): Strategy for using tips. Options are "always", "once", "never", "on aspiration". Default is "always".
             touch_tip (bool, optional): Whether to touch the tip to the side of the well after dispensing. Default is False.
-            blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination" or "trash". Empty string will result in no blow-out.
+            blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination", "trash", or "source_after_pipetting". Empty string will result in no blow-out. The "source_after_pipetting" option keeps overhead liquid and air gap through operations and blows out to source when the tip is about to be changed or dropped, and also at the end of all transfers.
             trash_tips (bool, optional): Whether to discard tips after use. Default is True.
             add_air_gap (bool, optional): Whether to add an air gap prior to aspiration. Default is True.
             overhead_liquid (bool, optional): Whether to aspirate extra liquid for more accurate dispensing. Default is False.
