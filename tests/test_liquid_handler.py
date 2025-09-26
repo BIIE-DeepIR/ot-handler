@@ -821,6 +821,84 @@ class TestLiquidHandlerReversePipetting(unittest.TestCase):
             "Pipette should have the overhead liquid remaining (min_volume)"
         )
 
+    def test_multivolley_reverse_pipetting_with_air_gap_no_resizing_gap(self):
+        """Test reverse pipetting with new_tip='never' - pipette should retain liquid until tip is manually dropped"""
+        volumes = [260, 280]  # Multiple dispenses with the same tip (>300µL total)
+        destination_wells = self.dest_wells[:2]
+        self.total_aspiration = 0
+        
+        # Mock the pipette to track current_volume
+        self.lh.p300_multi.current_volume = 0
+        
+        # Simulate reverse pipetting behavior - pipette retains overhead liquid
+        def mock_aspirate(volume, location, **kwargs):
+            self.lh.p300_multi.current_volume += volume
+            if self.lh.p300_multi.current_volume > self.lh.p300_multi.max_volume:
+                raise RuntimeError("Pipette over-aspiration beyond max volume")
+            self.total_aspiration += volume
+
+        def mock_air_gap(volume, location=None, **kwargs):
+            self.lh.p300_multi.current_volume += volume
+            if self.lh.p300_multi.current_volume > self.lh.p300_multi.max_volume:
+                raise RuntimeError("Pipette over-aspiration beyond max volume")
+
+        def mock_dispense(volume, location, **kwargs):
+            # In reverse pipetting, we only dispense the requested volume, not all liquid
+            # The pipette can dispense below min_volume, but overhead liquid should remain
+            self.lh.p300_multi.current_volume = max(0, self.lh.p300_multi.current_volume - volume)
+            
+        def mock_drop_tip():
+            # When tip is dropped, pipette volume should reset to 0
+            self.lh.p300_multi.current_volume = 0
+            
+        def mock_blow_out(location):
+            # When blowing out, pipette volume should reset to 0
+            self.lh.p300_multi.current_volume = 0
+            
+        self.lh.p300_multi.aspirate.side_effect = mock_aspirate
+        self.lh.p300_multi.dispense.side_effect = mock_dispense
+        self.lh.p300_multi.air_gap.side_effect = mock_air_gap
+        self.lh.p300_multi.drop_tip.side_effect = mock_drop_tip
+        self.lh.p300_multi.blow_out.side_effect = mock_blow_out
+
+        # Act - perform reverse pipetting
+        failed_ops = self.lh.distribute(
+            volumes=volumes,
+            source_well=self.source_well,
+            destination_wells=destination_wells,
+            new_tip="never",
+            overhead_liquid=True,
+            add_air_gap=True,
+            blow_out_to="",  # Empty string prevents blow-out
+        )
+
+        # Assert - verify reverse pipetting behavior
+        self.assertEqual(len(failed_ops), 0, "No operations should fail")
+        
+        # Verify that blow_out was never called (key characteristic of reverse pipetting)
+        self.lh.p300_multi.blow_out.assert_not_called()
+        
+        # Verify aspirate was called (should aspirate overhead liquid each time)
+        self.assertGreater(self.lh.p300_multi.aspirate.call_count, 0)
+        
+        # Verify dispense was called for each destination
+        self.assertEqual(self.lh.p300_multi.dispense.call_count, len(volumes) + 1)
+        
+        # Verify pipette behavior (in reverse pipetting, overhead liquid is aspirated initially)
+        # The key is that blow_out is not called, so any remaining liquid stays in the tip
+        self.assertGreaterEqual(
+            self.lh.p300_multi.current_volume, 
+            0,
+            "Pipette should have some liquid or be empty, but never negative"
+        )
+        self.assertEqual(
+            self.total_aspiration - sum(volumes),
+            self.lh.p300_multi.min_volume,
+            "Pipette should have the overhead liquid remaining (min_volume)"
+        )
+        for command in self.lh.protocol_api.commands():
+            print(command)
+
     def test_reverse_pipetting_with_once_tip_change(self):
         """Test reverse pipetting with new_tip='once' - single tip used for all operations"""
         volumes = [15, 12, 8, 5, 3]  # All volumes ≤ 20µL will use P20 single channel

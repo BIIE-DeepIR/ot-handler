@@ -881,7 +881,7 @@ class LiquidHandler:
         - touch_tip (bool, optional): Whether to touch the tip to the side of the well after aspirating or dispensing.
         - blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination", "trash", or "source_on_tip_change". Empty string will result in no blow-out, which can be used e.g. for reverse pipetting. The "source_on_tip_change" option keeps overhead liquid and air gap through operations and only blows out to source when the tip is about to be changed or dropped.
         - trash_tips (bool, optional): Whether to discard tips after use.
-        - add_air_gap (bool, optional): Whether to add an air gap after aspiration.
+        - add_air_gap (bool, optional): Whether to add an air gap after aspiration. When enabled, the air gap volume equals the minimum pipette volume and reduces the effective maximum volume.
         - overhead_liquid (bool, optional): Whether to aspirate extra liquid to ensure complete transfer.
         - mix_after (tuple, optional): First element is repetitions and second element is volume of mixing at the destination well after dispense. False when no mixing needed. Will block multi-dispense mode.
         - retention_time (float, optional): time to wait in seconds after every aspiration & dispense prior to moving on. Defaults to 0.0 s. Helps viscous liquids to populate the tip fully.
@@ -936,8 +936,10 @@ class LiquidHandler:
             "The parameter blow_out_to must always be defined and one of source, destination, trash, source_on_tip_change or empty string. Blow out happens only if there's air gap or overhead liquid"
         )
 
-        # Check for volumes exceeding effective pipette max volume (accounting for overhead liquid)
-        effective_max_single_volume = self.max_volume - (self.p300_multi.min_volume if overhead_liquid else 0)
+        # Check for volumes exceeding effective pipette max volume (accounting for overhead liquid and air gap)
+        air_gap_volume = self.p300_multi.min_volume if add_air_gap else 0
+        overhead_volume = self.p300_multi.min_volume if overhead_liquid else 0
+        effective_max_single_volume = self.max_volume - overhead_volume - air_gap_volume
         new_operations = []
         for operation in [[v, s, d] for v, s, d in zip(volumes, source_wells, destination_wells)]:
             volume = operation[0]
@@ -1117,7 +1119,9 @@ class LiquidHandler:
                                 allocated_indexes.extend(idxs)
                                 continue
                             # No multi-dispense if tip change is set as "always", no-multi aspiration if if tip change set as "always" or "on aspiration"
-                            effective_max_vol = max_vol - (pipette.min_volume if overhead_liquid else 0)
+                            air_gap_vol = pipette.min_volume if add_air_gap else 0
+                            overhead_vol = pipette.min_volume if overhead_liquid else 0
+                            effective_max_vol = max_vol - overhead_vol - air_gap_vol
                             if (
                                 set_volume + volume <= effective_max_vol
                                 and new_tip != "always"
@@ -1133,7 +1137,9 @@ class LiquidHandler:
                                 if current_set:
                                     grouped_sets[p_idx].append(current_set)
                                     current_set = []
-                                effective_max_vol_single = max_vol - (pipette.min_volume if overhead_liquid else 0)
+                                air_gap_vol_single = pipette.min_volume if add_air_gap else 0
+                                overhead_vol_single = pipette.min_volume if overhead_liquid else 0
+                                effective_max_vol_single = max_vol - overhead_vol_single - air_gap_vol_single
                                 if volume > effective_max_vol_single:
                                     sets = math.ceil(volume / effective_max_vol_single)
                                     set_volume = volume / sets
@@ -1154,7 +1160,9 @@ class LiquidHandler:
             for op in steps:
                 if op[0] not in allocated_indexes:
                     idx, source, destination, volume = op
-                    effective_max_vol_single = max_vol - (pipette.min_volume if overhead_liquid else 0)
+                    air_gap_vol_orphan = pipette.min_volume if add_air_gap else 0
+                    overhead_vol_orphan = pipette.min_volume if overhead_liquid else 0
+                    effective_max_vol_single = max_vol - overhead_vol_orphan - air_gap_vol_orphan
                     if volume > effective_max_vol_single:
                         sets = math.ceil(volume / effective_max_vol_single)
                         sub_volume = volume / sets
@@ -1275,10 +1283,8 @@ class LiquidHandler:
                     extra_volume = (
                         pipette.min_volume if should_add_overhead and set_volume + pipette.min_volume <= max_vol else 0
                     )
-                    air_gap = (
-                        min(pipette.min_volume, 20, max(0, max_vol - set_volume - extra_volume))
-                        if should_add_air_gap
-                        else 0
+                    air_gap_volume = (
+                        pipette.min_volume if should_add_air_gap else 0
                     )
                 except OutOfTipsError:
                     logging.error(
@@ -1296,9 +1302,9 @@ class LiquidHandler:
                 last_index = 0
                 try:
                     # Perform aspiration with air gap
-                    if air_gap:
+                    if air_gap_volume:
                         pipette.move_to(location=source_well.top(5))
-                        pipette.air_gap(volume=air_gap)
+                        pipette.air_gap(volume=air_gap_volume)
                         # Mark that air gap has been added to this tip
                         tip_state[pipette_name]["has_air_gap"] = True
                     pipette.aspirate(
@@ -1451,8 +1457,8 @@ class LiquidHandler:
                     # Check if air gap should be added based on current tip state
                     should_add_air_gap = add_air_gap and not tip_state[pipette_name]["has_air_gap"]
                     
-                    air_gap = (
-                        min(pipette.min_volume, 20, max(0, max_vol - set_volume)) if should_add_air_gap else 0
+                    air_gap_volume = (
+                        pipette.min_volume if should_add_air_gap else 0
                     )
                 except OutOfTipsError:
                     logging.error(
@@ -1469,9 +1475,9 @@ class LiquidHandler:
 
                 try:
                     # Perform aspirations with air gap
-                    if air_gap:
+                    if air_gap_volume:
                         pipette.move_to(location=dispense_set[0][0].top(5))
-                        pipette.air_gap(volume=air_gap)
+                        pipette.air_gap(volume=air_gap_volume)
                         # Mark that air gap has been added to this tip
                         tip_state[pipette_name]["has_air_gap"] = True
                     total_volume = 0
@@ -1609,10 +1615,8 @@ class LiquidHandler:
                     extra_volume = (
                         pipette.min_volume if should_add_overhead and volume + pipette.min_volume <= max_vol else 0
                     )
-                    air_gap = (
-                        min(pipette.min_volume, 20, max(0, max_vol - volume - extra_volume))
-                        if should_add_air_gap
-                        else 0
+                    air_gap_volume = (
+                        pipette.min_volume if should_add_air_gap else 0
                     )
                 except OutOfTipsError:
                     logging.error(
@@ -1627,9 +1631,9 @@ class LiquidHandler:
 
                 try:
                     # Perform aspiration with air gap
-                    if air_gap:
+                    if air_gap_volume:
                         pipette.move_to(location=source.top(5))
-                        pipette.air_gap(volume=air_gap)
+                        pipette.air_gap(volume=air_gap_volume)
                         # Mark that air gap has been added to this tip
                         tip_state[pipette_name]["has_air_gap"] = True
                     pipette.aspirate(volume=volume + extra_volume, location=source, **kwargs)
