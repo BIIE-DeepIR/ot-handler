@@ -4,9 +4,8 @@ import setuptools
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
-# Read in requirements from requirements.txt
-with open("requirements.txt", "r", encoding="utf-8") as req:
-    requirements = req.read().splitlines()
+# Requirements
+requirements = ["opentrons==8.2.0"]
 
 setuptools.setup(
     name="ot_handler",  
