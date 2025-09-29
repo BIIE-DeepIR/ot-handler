@@ -10,7 +10,7 @@ with open("requirements.txt", "r", encoding="utf-8") as req:
 
 setuptools.setup(
     name="ot_handler",  
-    version="0.1.1",    
+    version="0.2.0",    
     author="Oskari Vinko",
     author_email="oskari.vinko@immune.engineering",
     description="A comprehensive solution for automating liquid handling tasks on the Opentrons OT-2.",

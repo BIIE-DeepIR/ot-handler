@@ -13,10 +13,28 @@ Before getting started with the liquid handler programming, it's worth reading t
 
 Visit the [issue tracker](https://app.asana.com/0/1209175521795471/1209175611695523) to see the current list of issues and planned features.
 
-## Version 0.1.1
+## Version 0.2.0
 
-New changes in this version:
+Major new features and improvements in this version:
 
+### Enhanced Liquid Handling
+- **Tip Reuse Limiting**: New `limit_tip_reuse` parameter allows forcing tip changes after a specified number of uses
+- **Advanced Blow-out Control**: New `source_on_tip_change` blow-out behavior for better liquid handling precision
+- **Retention Time**: Added retention time parameter for transfers to improve accuracy
+- **Overhead Liquid & Air Gap Tracking**: Enhanced tracking of overhead liquid and air gap volumes
+- **Large Volume Handling**: Operations exceeding pipette max volume are automatically split into manageable operations
+
+### Improved Configuration & Flexibility
+- **Custom Labware Support**: Support for custom labware definitions folder via `labware_folder` parameter
+- **Deck Layout Configuration**: Custom deck layout can be provided via JSON string or file path using `deck_layout` parameter
+- **Column-wise Pipetting**: Optimized pipetting order that prioritizes column-wise operations for efficiency
+
+### Enhanced Error Handling & Reliability
+- **Graceful Error Recovery**: OutOfTipsError no longer halts all operations - failed operations are tracked and returned with reasons
+- **Better Filter Tips Support**: Improved filter tip utilization for full volleys
+- **Automatic Resource Management**: Improved homing and labware latch management on exit
+
+### Previous Changes (v0.1.1)
 - `opentrons.log` -> `ot_handler.log` and is now located in the working directory
 - `default_layout.ot2` is now located in the working directory
 
@@ -64,6 +82,7 @@ More information on how to connect the OT-2 with WiFi and SSH, follow the sectio
 from ot_handler import LiquidHandler  # edit path if you cloned the submodule to another path
 
 # Initialize the LiquidHandler in simulation mode
+# New parameters: deck_layout for custom layouts, labware_folder for custom labware
 lh = LiquidHandler(simulation=True, load_default=False)
 
 # Load tips
@@ -82,6 +101,54 @@ lh.distribute(
     new_tip="once")
 
 # Drops tips if any left on the pipettes and homes to robot to a safe position
+lh.home()
+```
+
+### Example: Advanced liquid handling features
+
+```python
+from ot_handler import LiquidHandler
+
+lh = LiquidHandler(simulation=True)
+
+# Load labware
+source_plate = lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", "1")
+dest_plate = lh.load_labware("nest_96_wellplate_100ul_pcr_full_skirt", "2")
+
+# Transfer with advanced parameters
+lh.transfer(
+    volumes=[50] * 96,
+    source_wells=source_plate.wells(),
+    destination_wells=dest_plate.wells(),
+    new_tip="once",
+    limit_tip_reuse=10,  # Force tip change after 10 uses
+    retention_time=2.0,  # Wait 2 seconds after aspiration
+    blow_out="source_on_tip_change"  # Blow out to source when changing tips
+)
+
+lh.home()
+```
+
+### Example: Custom deck layout and labware
+
+```python
+from ot_handler import LiquidHandler
+
+# Custom deck layout as JSON string or file path
+custom_layout = {
+    "labware": {},
+    "multichannel_tips": {"7": "opentrons_96_tiprack_300ul"},
+    "single_channel_tips": {"11": "opentrons_96_tiprack_20ul"},
+    "modules": {"4": "temperature module gen2"}
+}
+
+# Initialize with custom configuration
+lh = LiquidHandler(
+    simulation=True,
+    deck_layout=custom_layout,
+    labware_folder="/path/to/custom/labware"
+)
+
 lh.home()
 ```
 
