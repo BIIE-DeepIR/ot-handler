@@ -82,6 +82,7 @@ class LiquidHandler:
         self.p20 = self.protocol_api.load_instrument(
             "p20_single_gen2", "left", tip_racks=self.single_p20_tips
         )
+        self.p20._core.get_min_volume = lambda: 0.5
 
         self.max_volume = max_volume if max_volume else self.p300_multi.max_volume
 
