@@ -5,6 +5,14 @@ All notable changes to the OT Handler project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-09-30
+
+### Changed
+- **Opentrons**: Requires `opentrons>=8.2.0` instead of exactly 8.2.0, so it installs next to opentrons 9.x (pydantic 2).
+
+### Fixed
+- **numpy 2.4+**: Aliases the removed `numpy.trapz` to `numpy.trapezoid` before opentrons loads.
+
 ## [0.2.0] - 2024-12-19
 
 ### Added
