@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from ot_handler.liquid_handler import (  # before opentrons: numpy.trapz alias
+    LIQUID_SUBMERGE_MM,
     OT2_MAX_API_LEVEL,
     TUBE_DISPENSE_DEPTH_MM,
     TUBE_MIN_CLEARANCE_MM,
@@ -23,6 +24,7 @@ from opentrons.protocols.api_support.types import APIVersion  # noqa: E402
 PLATE = "nest_96_wellplate_200ul_flat"
 TUBES = "opentrons_15_tuberack_falcon_15ml_conical"
 RESERVOIR = "nest_12_reservoir_15ml"
+DEEP_PLATE = "nest_96_wellplate_2ml_deep"  # has innerLabwareGeometry
 
 
 def handler(**kwargs):
@@ -117,6 +119,76 @@ class TestSharedTipRacks(unittest.TestCase):
         explicit_front = lh.load_tips("opentrons_96_tiprack_300ul", 2, single_channel=True)
         self.assertEqual(lh.p300_tips, [front, back, explicit_front])
         self.assertEqual(lh.single_p300_tips, [back, explicit_front])
+
+
+class TestLiquidTracking(unittest.TestCase):
+    def heights(self, call, well):
+        bottom = well.bottom().point.z
+        end = call.get("end_location")
+        return call["where"][1] - bottom, (end.point.z - bottom) if end is not None else None
+
+    def test_single_well_follows_the_meniscus_down(self):
+        lh = handler()
+        src, dst = lh.load_labware(DEEP_PLATE, 4), lh.load_labware(DEEP_PLATE, 5)
+        self.assertEqual(lh.load_liquids(src, {"A1": 500}), [])
+        level = float(src["A1"].current_liquid_height())
+        aspirates = spy(lh.p300_multi, "aspirate")
+        self.assertEqual(lh.transfer([150], [src["A1"]], [dst["A1"]], add_air_gap=False, overhead_liquid=False), [])
+        start, end = self.heights(aspirates[-1], src["A1"])
+        self.assertAlmostEqual(start, level - LIQUID_SUBMERGE_MM, places=1)
+        self.assertLess(end, start)
+        self.assertAlmostEqual(float(src["A1"].current_liquid_volume()), 350, delta=1)
+
+    def test_multichannel_takes_the_lowest_level_in_the_column(self):
+        lh = handler()
+        src, dst = lh.load_labware(DEEP_PLATE, 4), lh.load_labware(DEEP_PLATE, 5)
+        column = [f"{r}1" for r in "ABCDEFGH"]
+        lh.load_liquids(src, {w: (300 if w == "D1" else 600) for w in column})
+        lowest = float(src["D1"].current_liquid_height())
+        aspirates = spy(lh.p300_multi, "aspirate")
+        wells = [src[w] for w in column]
+        self.assertEqual(lh.transfer([100] * 8, wells, [dst[w] for w in column], overhead_liquid=False), [])
+        start, end = self.heights(aspirates[-1], src["A1"])
+        self.assertAlmostEqual(start, lowest - LIQUID_SUBMERGE_MM, places=1)
+        self.assertLess(end, start)
+        self.assertAlmostEqual(float(src["H1"].current_liquid_volume()), 500, delta=1)
+
+    def test_eight_tips_in_one_trough_well_draw_eight_times_the_volume(self):
+        lh = handler()
+        trough, dst = lh.load_labware(RESERVOIR, 4), lh.load_labware(DEEP_PLATE, 5)
+        lh.load_liquids(trough, {"A1": 10000})
+        column = [dst[f"{r}1"] for r in "ABCDEFGH"]
+        self.assertEqual(lh.transfer([100] * 8, [trough["A1"]] * 8, column, overhead_liquid=False), [])
+        self.assertAlmostEqual(float(trough["A1"].current_liquid_volume()), 9200, delta=5)
+
+    def test_a_plate_filled_during_the_run_is_tracked_once_marked_empty(self):
+        lh = handler()
+        src, mid, dst = (lh.load_labware(DEEP_PLATE, s) for s in (4, 5, 6))
+        lh.load_liquids(src, {"A1": 500})
+        lh.load_liquids(mid, {"A1": 0})
+        self.assertEqual(lh.transfer([200], [src["A1"]], [mid["A1"]]), [])
+        aspirates = spy(lh.p300_multi, "aspirate")
+        self.assertEqual(lh.transfer([100], [mid["A1"]], [dst["A1"]], add_air_gap=False), [])
+        start, end = self.heights(aspirates[-1], mid["A1"])
+        self.assertIsNotNone(end)
+        self.assertGreaterEqual(end, TUBE_MIN_CLEARANCE_MM)
+
+    def test_a_nearly_empty_well_stops_above_the_bottom(self):
+        lh = handler()
+        src, dst = lh.load_labware(DEEP_PLATE, 4), lh.load_labware(DEEP_PLATE, 5)
+        lh.load_liquids(src, {"A1": 60})
+        aspirates = spy(lh.p300_multi, "aspirate")
+        self.assertEqual(lh.transfer([50], [src["A1"]], [dst["A1"]], add_air_gap=False), [])
+        start, end = self.heights(aspirates[-1], src["A1"])
+        self.assertGreaterEqual(min(h for h in (start, end) if h is not None), TUBE_MIN_CLEARANCE_MM)
+
+    def test_unrecorded_wells_are_aspirated_as_before(self):
+        lh = handler()
+        src, dst = lh.load_labware(DEEP_PLATE, 4), lh.load_labware(DEEP_PLATE, 5)
+        aspirates = spy(lh.p300_multi, "aspirate")
+        self.assertEqual(lh.transfer([150], [src["A1"]], [dst["A1"]]), [])
+        self.assertEqual(aspirates[-1]["where"], ("A1", None))
+        self.assertNotIn("end_location", aspirates[-1])
 
 
 class TestDeepTubes(unittest.TestCase):

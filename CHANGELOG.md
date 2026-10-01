@@ -5,6 +5,16 @@ All notable changes to the OT Handler project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-01
+
+### Added
+- **Liquid-level tracking in any well.** `load_liquids(labware, {well: ul})` records what a plate, trough or rack holds (0 marks a well empty). Aspirations from a recorded well whose definition has `innerLabwareGeometry` start `LIQUID_SUBMERGE_MM` (2 mm) under the meniscus and follow it down to the same depth under where it ends (Protocol API 2.24+ `end_location`), never closer than 1 mm to the bottom or under the heater-shaker clearance. The 8-channel takes the lowest level in its column; eight tips in one trough well draw eight times the volume. Deep tubes keep `TUBE_SUBMERGE_MM`, now following the surface too.
+- Wells marked empty are tracked as they fill, so an intermediate plate is aspirated from the same way later in the run.
+
+### Changed (behaviour)
+- A tracked aspiration into an empty tip first resets the plunger above the well (`prepare_to_aspirate`), which Opentrons requires after a dispense or blow-out.
+- Wells without a recorded volume, or labware without inner geometry, are aspirated exactly as before. Opentrons' `meniscus()` targets are not used: on OT-2 GEN2 pipettes they fail for lack of liquid-level-detection settings (`KeyError: 't200'`), so heights come from `current_liquid_height()` and `volume_from_height()`.
+
 ## [0.5.0] - 2026-10-01
 
 ### Changed (behaviour)

@@ -40,6 +40,10 @@ TUBE_DISPENSE_DEPTH_MM = 10.0
 #: when the tube's liquid volume is known, and the floor it never goes under.
 TUBE_SUBMERGE_MM = 3.0
 TUBE_MIN_CLEARANCE_MM = 1.0
+#: How far below the meniscus an aspiration starts, and ends, in any other well
+#: whose liquid volume is known (``load_liquids``) and whose definition maps
+#: volume to height (``innerLabwareGeometry``). The tip follows the surface down.
+LIQUID_SUBMERGE_MM = 2.0
 
 #: Opentrons dispenses this far above the well bottom unless told otherwise.
 OPENTRONS_DEFAULT_CLEARANCE_MM = 1.0
@@ -642,6 +646,99 @@ class LiquidHandler:
                 return self._shaker_location(well)
             return well.bottom(max(TUBE_MIN_CLEARANCE_MM, height - TUBE_SUBMERGE_MM))
         return self._shaker_location(well)
+
+    def _height_for_volume(self, well, volume_ul):
+        """Liquid height above the bottom at ``volume_ul``: Opentrons only maps height to volume."""
+        low, high = 0.0, float(well.depth)
+        for _ in range(30):
+            middle = (low + high) / 2
+            if well.volume_from_height(middle) < volume_ul:
+                low = middle
+            else:
+                high = middle
+        return low
+
+    def _tracked_heights(self, well, pipette, volume):
+        """``(start, end)`` liquid heights above the bottom around aspirating ``volume``.
+
+        The 8-channel takes the lowest level of the column it dips into; eight tips
+        in one trough well draw eight times the volume. None when any level is
+        unknown: no liquid recorded, or a definition without inner geometry.
+        """
+        wells = [well]
+        if pipette is self.p300_multi and not self.single_tip_mode:
+            column = well.parent.columns_by_name().get(well.well_name[1:], [])
+            if well.well_name[0] == "A" and len(column) == 8:
+                wells = column
+        drawn = volume * 8 / len(wells) if pipette is self.p300_multi and not self.single_tip_mode else volume
+        try:
+            levels = [(float(w.current_liquid_height()), float(w.current_liquid_volume())) for w in wells]
+            start = min(height for height, _ in levels)
+            end = min(
+                self._height_for_volume(w, max(held - drawn, 0.0)) for w, (_, held) in zip(wells, levels)
+            )
+        except Exception:  # LiquidHeightUnknownError, IncompleteLabwareDefinitionError, ...
+            return None
+        return start, end
+
+    def _aspirate_target(self, well, pipette, volume):
+        """``location`` (and ``end_location``) for aspirating ``volume`` from ``well``.
+
+        A known level: LIQUID_SUBMERGE_MM (TUBE_SUBMERGE_MM in a deep tube) under the
+        meniscus, following it down to the same depth under where it ends, never
+        closer to the bottom than TUBE_MIN_CLEARANCE_MM or the shaker clearance.
+        Anything else: ``_pipetting_location``, as before.
+        """
+        location = self._pipetting_location(well, pipette)
+        if not isinstance(well, Well) or (self._is_deep_tube(well) and pipette is self.p300_multi):
+            return {"location": location}
+        heights = self._tracked_heights(well, pipette, volume)
+        if heights is None:
+            return {"location": location}
+        submerge = TUBE_SUBMERGE_MM if self._is_deep_tube(well) else LIQUID_SUBMERGE_MM
+        floor = TUBE_MIN_CLEARANCE_MM
+        if self._labware_on_shaker() is well.parent:
+            floor = max(floor, getattr(self, "_shaker_dispense_clearance_mm", None) or 0.0)
+        start, end = (max(floor, height - submerge) for height in heights)
+        if not pipette.current_volume:
+            # A tracked aspirate needs the plunger at its bottom, which a dispense
+            # or blow-out leaves it past; reset it above the liquid.
+            pipette.move_to(well.top())
+            pipette.prepare_to_aspirate()
+        if end >= start:
+            return {"location": well.bottom(start)}
+        return {"location": well.bottom(start), "end_location": well.bottom(end)}
+
+    def load_liquids(self, labware, volumes, name: str = None):
+        """Record what the wells of ``labware`` hold, ``{well name: volume in ul}``; 0 marks a well empty.
+
+        Opentrons then keeps every recorded well current through each aspirate and
+        dispense, and aspirations from them follow the meniscus down (see
+        ``_aspirate_target``) where the definition maps volume to height. Mark the
+        wells a run will fill empty, so a plate filled during the run can be
+        aspirated from the same way. Returns the well names that could not be recorded.
+        """
+        volumes = {str(w): float(v or 0) for w, v in dict(volumes).items()}
+        failed = []
+        empty = [w for w, v in volumes.items() if v <= 0]
+        if empty:
+            try:
+                labware.load_empty([labware[w] for w in empty])
+            except Exception as e:  # APIVersionError on old levels, a well already holding liquid
+                self.log.warning(f"Cannot mark {len(empty)} wells of {labware} empty: {e}")
+                failed += empty
+        liquid = None
+        for w, v in volumes.items():
+            if v <= 0:
+                continue
+            try:
+                if liquid is None:
+                    liquid = self.protocol_api.define_liquid(name or labware.load_name)
+                labware[w].load_liquid(liquid, v)
+            except Exception as e:
+                self.log.warning(f"Cannot record the liquid volume of {labware} {w}: {e}")
+                failed.append(w)
+        return failed
 
     def set_well_volume(self, well: Well, volume_ul: float, name: str = None):
         """Tell Opentrons how much liquid a well holds, so deep-tube pipetting can track the level.
@@ -1602,7 +1699,7 @@ class LiquidHandler:
                         tip_state[pipette_name]["has_air_gap"] = True
                     pipette.aspirate(
                         volume=set_volume + extra_volume,
-                        location=self._pipetting_location(source_well, pipette),
+                        **self._aspirate_target(source_well, pipette, set_volume + extra_volume),
                         **kwargs,
                     )
                     # Mark that overhead liquid has been added to this tip if extra_volume > 0
@@ -1780,7 +1877,7 @@ class LiquidHandler:
                     for source, _, volume, idx in dispense_set:
                         pipette.aspirate(
                             volume=volume,
-                            location=self._pipetting_location(source, pipette),
+                            **self._aspirate_target(source, pipette, volume),
                             **kwargs,
                         )
                         self._wait(retention_time)
@@ -1940,7 +2037,7 @@ class LiquidHandler:
                         tip_state[pipette_name]["has_air_gap"] = True
                     pipette.aspirate(
                         volume=volume + extra_volume,
-                        location=self._pipetting_location(source, pipette),
+                        **self._aspirate_target(source, pipette, volume + extra_volume),
                         **kwargs,
                     )
                     # Mark that overhead liquid has been added to this tip if extra_volume > 0
