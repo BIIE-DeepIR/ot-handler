@@ -9,7 +9,7 @@ requirements = ["opentrons>=10.0.0"]
 
 setuptools.setup(
     name="ot_handler",  
-    version="0.6.1",    
+    version="0.6.2",    
     author="Oskari Vinko",
     author_email="oskari.vinko@immune.engineering",
     description="A comprehensive solution for automating liquid handling tasks on the Opentrons OT-2.",

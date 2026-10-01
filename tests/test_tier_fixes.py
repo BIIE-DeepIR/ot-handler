@@ -404,3 +404,21 @@ class TestRunLog(unittest.TestCase):
 
         self.assertEqual(logging.getLogger("ot_handler").handlers, [])
         self.assertEqual(handler().run_log_text(), "")
+
+
+class TestLoadLiquidsMapping(unittest.TestCase):
+    def test_a_mapping_proxy_is_read_through_items(self):
+        """Over RPyC the argument is a proxy: dict() on it iterates keys as sequences."""
+        from collections.abc import Mapping
+
+        class Proxy(Mapping):
+            def __init__(self, d): self.d = d
+            def __getitem__(self, k): return self.d[k]
+            def __len__(self): return len(self.d)
+            def __iter__(self):  # what a netref dict does under dict(): hands out the keys
+                return iter(self.d)
+
+        lh = handler()
+        plate = lh.load_labware("biologix_96_wellplate_2200ul_deep", 4) if False else lh.load_labware(PLATE, 4)
+        self.assertEqual(lh.load_liquids(plate, Proxy({"B10": 90.0, "A1": 50.0})), [])
+        self.assertAlmostEqual(float(plate["B10"].current_liquid_volume()), 90.0)
