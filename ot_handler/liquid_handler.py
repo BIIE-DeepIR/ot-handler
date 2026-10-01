@@ -722,9 +722,10 @@ class LiquidHandler:
         wells a run will fill empty, so a plate filled during the run can be
         aspirated from the same way. Returns the well names that could not be recorded.
         """
-        # .items(), not dict(volumes): over RPyC the argument is a proxy, and
-        # dict() on it iterates the keys as sequences ("B10" -> B, 1, 0).
-        volumes = {str(w): float(v or 0) for w, v in volumes.items()}
+        # Iteration and indexing only: over RPyC the argument is a proxy whose
+        # client forbids attribute access (no .items()), and dict() on it would
+        # iterate the keys as character sequences ("B10" -> B, 1, 0).
+        volumes = {str(w): float(volumes[w] or 0) for w in volumes}
         failed = []
         empty = [w for w, v in volumes.items() if v <= 0]
         if empty:

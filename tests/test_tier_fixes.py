@@ -413,6 +413,7 @@ class TestLoadLiquidsMapping(unittest.TestCase):
 
         class Proxy(Mapping):
             def __init__(self, d): self.d = d
+            def items(self): raise AttributeError("cannot access 'items'")  # RPyC default client config
             def __getitem__(self, k): return self.d[k]
             def __len__(self): return len(self.d)
             def __iter__(self):  # what a netref dict does under dict(): hands out the keys
