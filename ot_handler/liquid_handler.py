@@ -57,6 +57,13 @@ RECOVERABLE_ERRORS = (ProtocolEngineError, OutOfTipsError)
 
 
 class LiquidHandler:
+    # Class-level fallbacks so close() and logging work on an instance whose
+    # __init__ never ran (or failed part way): the module logger, no run log.
+    log = log
+    log_file = None
+    _log_handler = None
+    _closed = False
+
     def __init__(
         self,
         api_version=None,
