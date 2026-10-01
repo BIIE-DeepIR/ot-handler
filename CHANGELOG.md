@@ -5,6 +5,11 @@ All notable changes to the OT Handler project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-10-01
+
+### Fixed
+- **Tracked aspirations drew air on the OT-2.** 0.6.0 passed `end_location` so the tip would follow the meniscus down while aspirating; that is a Flex feature, and an OT-2 runs the plunger before the tip reaches the liquid (confirmed on the bench: 15 µL of air from a 15 mL tube, then a short dip). A tracked aspiration now uses one fixed location, 2 mm (3 mm in a deep tube) under where the meniscus will stand after the draw.
+
 ## [0.6.0] - 2026-10-01
 
 ### Added

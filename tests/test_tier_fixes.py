@@ -123,9 +123,11 @@ class TestSharedTipRacks(unittest.TestCase):
 
 class TestLiquidTracking(unittest.TestCase):
     def heights(self, call, well):
+        """(aspiration height above the bottom, None): one fixed location, never a moving
+        aspirate - end_location is a Flex feature that draws air on the OT-2."""
+        self.assertNotIn("end_location", call)
         bottom = well.bottom().point.z
-        end = call.get("end_location")
-        return call["where"][1] - bottom, (end.point.z - bottom) if end is not None else None
+        return call["where"][1] - bottom, None
 
     def test_single_well_follows_the_meniscus_down(self):
         lh = handler()
@@ -134,9 +136,10 @@ class TestLiquidTracking(unittest.TestCase):
         level = float(src["A1"].current_liquid_height())
         aspirates = spy(lh.p300_multi, "aspirate")
         self.assertEqual(lh.transfer([150], [src["A1"]], [dst["A1"]], add_air_gap=False, overhead_liquid=False), [])
-        start, end = self.heights(aspirates[-1], src["A1"])
-        self.assertAlmostEqual(start, level - LIQUID_SUBMERGE_MM, places=1)
-        self.assertLess(end, start)
+        start, _ = self.heights(aspirates[-1], src["A1"])
+        # Under where the meniscus ends up after the draw: lower than the pre-draw point.
+        self.assertLess(start, level - LIQUID_SUBMERGE_MM)
+        self.assertGreater(start, level - LIQUID_SUBMERGE_MM - 10)
         self.assertAlmostEqual(float(src["A1"].current_liquid_volume()), 350, delta=1)
 
     def test_multichannel_takes_the_lowest_level_in_the_column(self):
@@ -148,9 +151,8 @@ class TestLiquidTracking(unittest.TestCase):
         aspirates = spy(lh.p300_multi, "aspirate")
         wells = [src[w] for w in column]
         self.assertEqual(lh.transfer([100] * 8, wells, [dst[w] for w in column], overhead_liquid=False), [])
-        start, end = self.heights(aspirates[-1], src["A1"])
-        self.assertAlmostEqual(start, lowest - LIQUID_SUBMERGE_MM, places=1)
-        self.assertLess(end, start)
+        start, _ = self.heights(aspirates[-1], src["A1"])
+        self.assertLess(start, lowest - LIQUID_SUBMERGE_MM)
         self.assertAlmostEqual(float(src["H1"].current_liquid_volume()), 500, delta=1)
 
     def test_eight_tips_in_one_trough_well_draw_eight_times_the_volume(self):
@@ -169,9 +171,9 @@ class TestLiquidTracking(unittest.TestCase):
         self.assertEqual(lh.transfer([200], [src["A1"]], [mid["A1"]]), [])
         aspirates = spy(lh.p300_multi, "aspirate")
         self.assertEqual(lh.transfer([100], [mid["A1"]], [dst["A1"]], add_air_gap=False), [])
-        start, end = self.heights(aspirates[-1], mid["A1"])
-        self.assertIsNotNone(end)
-        self.assertGreaterEqual(end, TUBE_MIN_CLEARANCE_MM)
+        start, _ = self.heights(aspirates[-1], mid["A1"])
+        self.assertIsNotNone(start)
+        self.assertGreaterEqual(start, TUBE_MIN_CLEARANCE_MM)
 
     def test_a_nearly_empty_well_stops_above_the_bottom(self):
         lh = handler()
@@ -179,8 +181,8 @@ class TestLiquidTracking(unittest.TestCase):
         lh.load_liquids(src, {"A1": 60})
         aspirates = spy(lh.p300_multi, "aspirate")
         self.assertEqual(lh.transfer([50], [src["A1"]], [dst["A1"]], add_air_gap=False), [])
-        start, end = self.heights(aspirates[-1], src["A1"])
-        self.assertGreaterEqual(min(h for h in (start, end) if h is not None), TUBE_MIN_CLEARANCE_MM)
+        start, _ = self.heights(aspirates[-1], src["A1"])
+        self.assertGreaterEqual(start, TUBE_MIN_CLEARANCE_MM)
 
     def test_unrecorded_wells_are_aspirated_as_before(self):
         lh = handler()

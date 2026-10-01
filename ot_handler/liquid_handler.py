@@ -682,12 +682,18 @@ class LiquidHandler:
         return start, end
 
     def _aspirate_target(self, well, pipette, volume):
-        """``location`` (and ``end_location``) for aspirating ``volume`` from ``well``.
+        """``location`` for aspirating ``volume`` from ``well``.
 
-        A known level: LIQUID_SUBMERGE_MM (TUBE_SUBMERGE_MM in a deep tube) under the
-        meniscus, following it down to the same depth under where it ends, never
-        closer to the bottom than TUBE_MIN_CLEARANCE_MM or the shaker clearance.
-        Anything else: ``_pipetting_location``, as before.
+        A known level: LIQUID_SUBMERGE_MM (TUBE_SUBMERGE_MM in a deep tube) under
+        where the meniscus will stand *after* the draw, so the tip stays submerged
+        for the whole aspiration; never closer to the bottom than
+        TUBE_MIN_CLEARANCE_MM or the shaker clearance. Anything else:
+        ``_pipetting_location``, as before.
+
+        One fixed location, never ``end_location``: Opentrons' aspirate-while-moving
+        is a Flex feature. An OT-2 accepts the argument but runs the plunger before
+        the tip is in the liquid (seen 2026-10-01: 15 ul of air from a tube, the tip
+        dipping afterwards), so it is never passed here.
         """
         location = self._pipetting_location(well, pipette)
         if not isinstance(well, Well) or (self._is_deep_tube(well) and pipette is self.p300_multi):
@@ -705,9 +711,7 @@ class LiquidHandler:
             # or blow-out leaves it past; reset it above the liquid.
             pipette.move_to(well.top())
             pipette.prepare_to_aspirate()
-        if end >= start:
-            return {"location": well.bottom(start)}
-        return {"location": well.bottom(start), "end_location": well.bottom(end)}
+        return {"location": well.bottom(min(start, end))}
 
     def load_liquids(self, labware, volumes, name: str = None):
         """Record what the wells of ``labware`` hold, ``{well name: volume in ul}``; 0 marks a well empty.
