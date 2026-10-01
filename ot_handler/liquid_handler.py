@@ -1,11 +1,19 @@
-import opentrons
-import opentrons.simulate
+import numpy
+
+# opentrons_shared_data (through 10.x) imports numpy.trapz, removed in numpy 2.4.
+# Here as well as in __init__.py so the module also works copied out of the package.
+if not hasattr(numpy, "trapz"):
+    numpy.trapz = numpy.trapezoid
+
+import opentrons  # noqa: E402
+import opentrons.simulate  # noqa: E402
 import opentrons.execute
 from opentrons.protocol_api.labware import Well, Labware
 from opentrons.protocol_api.labware import OutOfTipsError
 from opentrons.protocol_api.disposal_locations import TrashBin
-from opentrons.protocol_engine.errors import ProtocolCommandFailedError
-from threading import Thread
+from opentrons.protocol_engine.errors import ProtocolCommandFailedError, ProtocolEngineError
+from opentrons.protocols.api_support.types import APIVersion
+from threading import Timer
 import os
 import time
 import math
@@ -13,6 +21,37 @@ import logging
 import json
 
 log_filepath = "ot_handler.log"
+
+#: The highest Protocol API level an OT-2 runs (Flex-only levels start at 2.29).
+#: The default api_version is the lower of this and what the installed
+#: opentrons supports, so a simulator on a new opentrons behaves like the robot.
+OT2_MAX_API_LEVEL = APIVersion(2, 28)
+
+#: Wells deeper than this are "deep tubes" (15/50 mL conicals are ~113-118 mm;
+#: 1.5 mL tube racks and deep-well plates are under 40 mm). The 8-channel can
+#: never reach their bottom - the idle nozzles hit the rack - so it only ever
+#: dispenses into them, from just below the rim, and the p20 does the rest.
+DEEP_TUBE_DEPTH_MM = 60.0
+#: How far below the rim the p300 dispenses into a deep tube.
+TUBE_DISPENSE_DEPTH_MM = 10.0
+#: How far below the (post-operation) meniscus the p20 pipettes in a deep tube
+#: when the tube's liquid volume is known, and the floor it never goes under.
+TUBE_SUBMERGE_MM = 3.0
+TUBE_MIN_CLEARANCE_MM = 1.0
+
+#: Opentrons dispenses this far above the well bottom unless told otherwise.
+OPENTRONS_DEFAULT_CLEARANCE_MM = 1.0
+
+#: The largest lift the heater-shaker can cause: a plate carried entirely on
+#: the platform. Not applied by default - it is the upper bound on what
+#: ``set_shaker_clearance`` should ever be asked for; the client decides the
+#: actual lift per plate from measured gaps.
+SHAKER_DISPENSE_CLEARANCE_MM = OPENTRONS_DEFAULT_CLEARANCE_MM + 2.0
+
+#: Errors from a single protocol command (bad volume, tip pickup failure, ...).
+#: transfer() records these as failed operations and carries on; anything else
+#: (connection loss, hardware faults, bugs) is re-raised after the tip is secured.
+RECOVERABLE_ERRORS = (ProtocolEngineError, OutOfTipsError)
 
 logging.basicConfig(
     filename=log_filepath,
@@ -25,12 +64,13 @@ logging.basicConfig(
 class LiquidHandler:
     def __init__(
         self,
-        api_version: str = opentrons.protocol_api.MAX_SUPPORTED_VERSION,
+        api_version=None,
         load_default: bool = True,
         simulation: bool = False,
         max_volume=None,
         deck_layout=None,
         labware_folder=None,
+        p20_min_volume: float = 0.5,
     ):
         """
         Initialize a LiquidHandler instance.
@@ -39,18 +79,25 @@ class LiquidHandler:
         and loads default labware if specified.
 
         Parameters:
-            api_version (str): The protocol API version to use. Defaults to '2.20'.
+            api_version (str): The protocol API level to use. Defaults to the lower of 2.28 (the OT-2's
+                ceiling) and the highest level the installed opentrons supports.
             load_default (bool): Whether to load the default labware configuration from the file 'default_layout.ot2'. Defaults to True.
             simulation (bool): If True, the handler operates in simulation mode. Defaults to False.
             max_volume: Custom maximum volume setting for pipette transfers in ul. If not provided, defaults to the pipette's inherent max volume.
             deck_layout (Union[str, dict]): Path to a JSON file or dictionary containing deck layout configuration. If provided, overrides load_default.
             labware_folder (str): Path to a folder containing labware definitions. If provided, overrides the default labware folder.
+            p20_min_volume (float): Smallest volume the p20 is allowed to pipette. Opentrons' own figure is
+                1 ul; 0.5 ul is below spec and must be calibrated for on each robot. None keeps Opentrons'.
         """
         # Check for conflicting parameters
         if load_default and deck_layout is not None:
             logging.warning(
                 "Both load_default=True and deck_layout provided. The deck_layout will override the default layout."
             )
+
+        if api_version is None:
+            api_version = min(opentrons.protocol_api.MAX_SUPPORTED_VERSION, OT2_MAX_API_LEVEL)
+        api_version = str(api_version)
 
         # initialize protocol API
         logging.info(f"Initializing protocol API with version {api_version}")
@@ -59,6 +106,14 @@ class LiquidHandler:
         else:
             self.protocol_api = opentrons.execute.get_protocol_api(api_version)
         self.simulation_mode = simulation
+        self.api_version = self.protocol_api.api_version
+
+        # Dispense height for labware riding the heater-shaker. None means
+        # Opentrons' own clearance: a robot nobody has instructed behaves
+        # exactly as it did before this existed. The client decides, per plate.
+        self._shaker_dispense_clearance_mm = None
+        # Deep tubes whose liquid level is unknown, warned about once each.
+        self._unknown_level_warned = set()
 
         # default values
         self.p300_tips = []
@@ -82,7 +137,16 @@ class LiquidHandler:
         self.p20 = self.protocol_api.load_instrument(
             "p20_single_gen2", "left", tip_racks=self.single_p20_tips
         )
-        self.p20._core.get_min_volume = lambda: 0.5
+        if p20_min_volume is not None:
+            # Opentrons has no public way to lower a pipette's minimum, so this
+            # reaches into the core. Fail loudly if that internal ever moves,
+            # rather than silently keeping Opentrons' 1 ul.
+            if not callable(getattr(self.p20._core, "get_min_volume", None)):
+                raise RuntimeError(
+                    "Cannot set the p20 minimum volume: InstrumentCore.get_min_volume is gone "
+                    "in this opentrons version. Pass p20_min_volume=None to keep Opentrons' own."
+                )
+            self.p20._core.get_min_volume = lambda: p20_min_volume
 
         self.max_volume = max_volume if max_volume else self.p300_multi.max_volume
 
@@ -119,11 +183,14 @@ class LiquidHandler:
         self.home()
 
     def __del__(self):
-        if not self.simulation_mode:
-            logging.info(
-                "Homing the robot and opening the labware latch as a part of the cleanup procedure."
-            )
-            self.home()
+        # getattr, not self.simulation_mode: a constructor that failed part way
+        # leaves the attribute unset, and the AttributeError raised here then
+        # lands on top of - and obscures - whatever actually went wrong.
+        if not getattr(self, "simulation_mode", True):
+            logging.info("Opening the labware latch as a part of the cleanup procedure.")
+            # Deliberately does NOT home: the gantry is parked either way, and
+            # it cost the better part of a minute at the end of every run with
+            # the operator waiting on it before they could clear the deck.
             self.open_shaker_latch()
 
     def _count_columns(self, plate_object, sample_count: int):
@@ -360,8 +427,7 @@ class LiquidHandler:
                                         well = destination_labware.wells(name)[0]
                                         if (
                                             count >= 8
-                                            and hasattr(well, "width")
-                                            and well.width > 70
+                                            and (getattr(well, "width", None) or 0) > 70
                                         ):
                                             destination_troughs.append(well)
                                 # Check transfers between troughs and columns
@@ -431,31 +497,14 @@ class LiquidHandler:
         allocated_operations = multichannel_operations_indexes
         p300_single_ops = []
         p20_ops = []
-        labware_forcing_p20 = [
-            "opentrons_10_tuberack_falcon_4x50ml_6x15ml_conical",
-            "opentrons_10_tuberack_nest_4x50ml_6x15ml_conical",
-            "opentrons_15_tuberack_falcon_15ml_conical",
-            "opentrons_15_tuberack_nest_15ml_conical",
-        ]
         for op in large_volume_operations:
             if op[0] in allocated_operations:
                 continue
-            if (
-                source_labware.parent in ["1", "2", "3"] and get_row_index(op[1]) in ["G", "H"]
-            ) or (
-                destination_labware.parent in ["1", "2", "3"] and get_row_index(op[2]) in ["G", "H"]
-            ):
+            if self._needs_p20(op[1], op[2]):
                 p20_ops.append(op)
-                allocated_operations.append(op[0])
-            elif (
-                source_labware.load_name in labware_forcing_p20
-                or destination_labware in labware_forcing_p20
-            ):
-                p20_ops.append(op)
-                allocated_operations.append(op[0])
             else:
                 p300_single_ops.append(op)
-                allocated_operations.append(op[0])
+            allocated_operations.append(op[0])
 
         for i in range(len(volumes)):
             if i not in allocated_operations:
@@ -469,6 +518,152 @@ class LiquidHandler:
         while not isinstance(well, str):
             well = well.parent
         return well
+
+    def _slot_of(self, well):
+        """The deck slot ("1".."11") holding a well, through any module; None for the trash."""
+        if isinstance(well, TrashBin):
+            return None
+        return self._find_parent(well)
+
+    def _is_deep_tube(self, well) -> bool:
+        """Deep tube (15/50 mL conical): the 8-channel can't reach its bottom, see DEEP_TUBE_DEPTH_MM."""
+        return isinstance(well, Well) and (well.depth or 0) > DEEP_TUBE_DEPTH_MM
+
+    def _in_front_row(self, well) -> bool:
+        """Rows G/H of slots 1-3: the 8-channel's idle nozzles would hit the robot's front."""
+        return (
+            isinstance(well, Well)
+            and self._slot_of(well) in ("1", "2", "3")
+            and well.well_name[0] in ("G", "H")
+        )
+
+    def _needs_p20(self, source, destination) -> bool:
+        """Whether a single-well operation must use the p20 rather than the 8-channel in single-tip mode.
+
+        - Front-row wells (rows G/H, slots 1-3), on the deck or on a module there.
+        - Aspirating from a deep tube: the 8-channel never reaches its liquid.
+          Dispensing into one is fine, the p300 does it from below the rim.
+        """
+        return (
+            self._in_front_row(source)
+            or self._in_front_row(destination)
+            or self._is_deep_tube(source)
+        )
+
+    def _pipetting_location(self, well, pipette):
+        """Where a pipette aspirates/dispenses/mixes in ``well``.
+
+        - 8-channel into a deep tube: TUBE_DISPENSE_DEPTH_MM below the rim; it can't go deeper.
+        - p20 in a deep tube whose liquid volume is known (``set_well_volume`` or Opentrons'
+          ``load_liquid``): TUBE_SUBMERGE_MM under the meniscus, never closer than
+          TUBE_MIN_CLEARANCE_MM to the bottom. A tip and nozzle driven to the bottom of a
+          full tube displace enough to overflow it. Opentrons updates the level after every
+          aspirate and dispense; a p20's 20 ul moves a 15 mL tube's meniscus ~0.2 mm, so the
+          pre-operation level is used as is. Unknown level: the bottom, as before, with one
+          warning per tube.
+        - Labware on the heater-shaker: lifted by the configured clearance.
+        - Everything else: Opentrons' default (1 mm above the bottom).
+        """
+        if not isinstance(well, Well):
+            return well
+        if self._is_deep_tube(well):
+            if pipette is self.p300_multi:
+                return well.top(-TUBE_DISPENSE_DEPTH_MM)
+            try:
+                height = float(well.current_liquid_height())
+            except Exception as e:  # LiquidHeightUnknownError, or an opentrons too old for it
+                if well not in self._unknown_level_warned:
+                    self._unknown_level_warned.add(well)
+                    logging.warning(
+                        f"Liquid level of {well} unknown ({type(e).__name__}); pipetting at the "
+                        "bottom. Call set_well_volume() first to keep the tip near the surface."
+                    )
+                return self._shaker_location(well)
+            return well.bottom(max(TUBE_MIN_CLEARANCE_MM, height - TUBE_SUBMERGE_MM))
+        return self._shaker_location(well)
+
+    def set_well_volume(self, well: Well, volume_ul: float, name: str = None):
+        """Tell Opentrons how much liquid a well holds, so deep-tube pipetting can track the level.
+
+        Opentrons then keeps the figure current through every aspirate and dispense.
+        Needs Protocol API 2.14 or later; older levels log a warning and track nothing.
+        """
+        try:
+            liquid = self.protocol_api.define_liquid(name or f"{well.parent.load_name} {well.well_name}")
+            well.load_liquid(liquid, volume_ul)
+        except Exception as e:  # APIVersionError on old levels
+            logging.warning(f"Cannot record the liquid volume of {well}: {e}")
+
+    def _touch_tip(self, pipette, well):
+        """touch_tip, skipped with a warning where the labware forbids it.
+
+        Reservoirs and other wide labware carry Opentrons' ``touchTipDisabled`` quirk.
+        Protocol API 2.28 turned the skip-with-warning into an error; keep the old behaviour.
+        """
+        if isinstance(well, Well) and "touchTipDisabled" in well.parent.quirks:
+            logging.warning(f"Touch tip skipped: not allowed on {well.parent.load_name}")
+            return
+        pipette.touch_tip(v_offset=-1)
+
+    def _secure_tip(self, pipette):
+        """After a failed command: empty the tip into the trash and drop it.
+
+        Otherwise the next aspiration starts with the previous source's liquid
+        still in the tip and contaminates the new source.
+        """
+        try:
+            if pipette.has_tip:
+                if pipette.current_volume:
+                    pipette.blow_out(self.trash)
+                pipette.drop_tip()
+        except Exception as e:  # noqa: BLE001 - best effort, the original error matters more
+            logging.error(f"Could not secure the tip of {pipette}: {e}")
+
+    def set_shaker_dispense_clearance(self, clearance_mm=SHAKER_DISPENSE_CLEARANCE_MM):
+        """Backwards-compatible alias for ``set_shaker_clearance``."""
+        return self.set_shaker_clearance(clearance_mm)
+
+    def set_shaker_clearance(self, clearance_mm=SHAKER_DISPENSE_CLEARANCE_MM):
+        """Override the height used for labware on the heater-shaker.
+
+        Pass None to pipette in shaker labware at Opentrons' own clearance,
+        like any other plate. Returns the value in force.
+        """
+        self._shaker_dispense_clearance_mm = clearance_mm
+        logging.info("Shaker dispense clearance set to %s mm", clearance_mm)
+        if clearance_mm and self._labware_on_shaker() is None:
+            logging.warning(
+                "Shaker dispense clearance set to %s mm but no labware is on the "
+                "heater-shaker - the clearance will not apply to anything",
+                clearance_mm,
+            )
+        return self._shaker_dispense_clearance_mm
+
+    def _labware_on_shaker(self):
+        """The labware currently riding the heater-shaker, if any."""
+        module = getattr(self, "shaker_module", None)
+        if module is None:
+            return None
+        return getattr(module, "labware", None)
+
+    def _shaker_location(self, destination):
+        """A well location, raised when its labware rides the heater-shaker.
+
+        A plate on the module sits slightly proud of where the deck model puts
+        it, so a tip aimed at the modelled bottom can meet the real one. Applies
+        to aspiration and dispensing alike. Only the passed location is rebased;
+        the well itself is left alone because blow-outs call ``.top()`` on it.
+        """
+        clearance = getattr(self, "_shaker_dispense_clearance_mm", None)
+        if not clearance:
+            return destination
+        on_shaker = self._labware_on_shaker()
+        if on_shaker is None or getattr(destination, "parent", None) is not on_shaker:
+            return destination
+        try:
+            return destination.bottom(clearance)
+        except AttributeError:
+            return destination
 
     def home(self):
         """
@@ -620,7 +815,7 @@ class LiquidHandler:
             logging.debug("Loading labware on the module")
             try:
                 labware = self.protocol_api.deck[deck_position].load_labware(model_string)
-            except Exception as e:
+            except Exception:
                 # The model string could match a custom labware file on the system
                 with open(f"{self.labware_folder}/{model_string}.json") as labware_file:
                     labware_def = json.load(labware_file)
@@ -669,7 +864,14 @@ class LiquidHandler:
         if labware.is_tiprack:
             if single_channel:
                 if labware.tip_length > 50:
+                    # Every 300 ul rack is a full 8x12 rack, so both modes draw from it.
+                    # Opentrons tracks the tips per rack: the 8-channel takes full
+                    # columns only, single-tip mode works a column up from row H
+                    # and finishes a part-used column before opening a fresh one.
                     self.single_p300_tips.append(labware)
+                    self.p300_tips.append(labware)
+                    if self.p300_multi is not None and not self.single_tip_mode:
+                        self.p300_multi.tip_racks = self.p300_tips
                 else:
                     self.single_p20_tips.append(labware)
                     if self.p20 is not None:
@@ -679,6 +881,16 @@ class LiquidHandler:
                     self.p300_tips.append(labware)
                     if self.p300_multi is not None and not self.single_tip_mode:
                         self.p300_multi.tip_racks = self.p300_tips
+                    # Shared with single-tip mode, except in the front row: a single
+                    # pickup starts at row H with the idle nozzles hanging in front of
+                    # the rack, which in slots 1-3 is the robot's front frame.
+                    if str(deck_position) not in ("1", "2", "3"):
+                        self.single_p300_tips.append(labware)
+                    else:
+                        logging.info(
+                            f"Tip rack in slot {deck_position} serves the 8-channel only; "
+                            "single-tip pickups at row H would reach past the deck front."
+                        )
                 else:
                     self.p20_tips.append(labware)
                     raise NotImplementedError("Multichannel p20 pipette is not yet supported.")
@@ -737,30 +949,28 @@ class LiquidHandler:
         if not self.temperature_module:
             raise Exception("No temperature module has been loaded on the deck.")
         if wait:
-            if self.temperature_timer:
-                if self.temperature_module.target != temperature:
-                    # Cancel the current thread if the target temperature has changed and set the new target temperature and thread
-                    self.release_temperature()
-                    self.temperature_module.set_temperature(temperature)
-                else:
-                    self.temperature_timer.join()
-            else:
-                self.temperature_module.set_temperature(temperature)
+            self.temperature_module.set_temperature(temperature)
         else:
-            self.temperature_timer = Thread(
-                target=self.temperature_module.set_temperature, args=(temperature,)
-            )
-            self.temperature_timer.start()
+            # start_set_temperature, not a thread around the blocking
+            # set_temperature: that thread's wait ran on the shared hardware
+            # loop and stalled the whole protocol until the block was at
+            # temperature. This sets the target and returns.
+            self.temperature_module.start_set_temperature(temperature)
+        self.temperature_timer = None
+
+    def wait_for_temperature(self):
+        """Block until the temperature module reaches the target set with ``set_temperature(wait=False)``."""
+        if not self.temperature_module:
+            raise Exception("No temperature module has been loaded on the deck.")
+        if self.temperature_module.target is not None:
+            self.temperature_module.await_temperature(self.temperature_module.target)
 
     def release_temperature(self):
         """
-        Release the temperature module by deactivating it and joining any active temperature setting thread.
+        Release the temperature module by deactivating it.
         """
         if not self.temperature_module:
             raise Exception("No temperature module has been loaded on the deck.")
-        if self.temperature_timer:
-            self.temperature_timer.join()  # there seems to be no way to cancel the thread / temperature set
-
         self.temperature_module.deactivate()
         self.temperature_timer = None
 
@@ -799,14 +1009,19 @@ class LiquidHandler:
         """
         if not self.shaker_module:
             raise Exception("No shaker module has been loaded on the deck.")
+        if self.shaking_timer is not None:
+            self.shaking_timer.cancel()
+            self.shaking_timer = None
         self.start_shaking(speed)
         if duration > 0:
             if wait:
-                time.sleep(duration)
+                self.protocol_api.delay(seconds=duration)
                 self.stop_shaking()
             else:
-                # Start a thread to stop the shaker after the duration
-                self.shaking_timer = Thread(target=self.shake, args=(speed, duration, True))
+                # Only the stop is deferred; the old thread re-ran shake() and
+                # so started the shaker a second time.
+                self.shaking_timer = Timer(duration, self.stop_shaking)
+                self.shaking_timer.daemon = True
                 self.shaking_timer.start()
 
     def start_shaking(self, speed: float):
@@ -901,36 +1116,31 @@ class LiquidHandler:
         """
         logging.debug(f"Transfer called with new tip: {new_tip}")
 
-        operations_length = max(
-            len(source_wells) if isinstance(source_wells, list) else 1,
-            len(destination_wells) if isinstance(destination_wells, list) else 1,
+        # A scalar or a one-element list applies to every operation; any other
+        # length must match. Silently running the shorter list, as this used
+        # to, skipped steps without a word.
+        as_list = lambda x: list(x) if isinstance(x, (list, tuple)) else [x]  # noqa: E731
+        volumes, source_wells, destination_wells = (
+            as_list(volumes), as_list(source_wells), as_list(destination_wells)
         )
-
-        volumes = (
-            [volumes] * operations_length
-            if isinstance(volumes, float) or isinstance(volumes, int)
-            else volumes
-        )
-        volumes = (
-            volumes
-            if isinstance(volumes, list) and len(volumes) == operations_length
-            else volumes * len(source_wells)
-        )
-
-        source_wells = source_wells if isinstance(source_wells, list) else [source_wells]
-        source_wells = (
-            source_wells
-            if len(source_wells) == operations_length
-            else source_wells * operations_length
-        )
-
+        operations_length = max(len(volumes), len(source_wells), len(destination_wells))
+        lengths = {
+            "volumes": len(volumes),
+            "source_wells": len(source_wells),
+            "destination_wells": len(destination_wells),
+        }
+        bad = [f"{k}={n}" for k, n in lengths.items() if n not in (1, operations_length)]
+        if bad:
+            raise ValueError(
+                f"transfer() lists must have one element or {operations_length} "
+                f"(the longest); got {', '.join(bad)}"
+            )
+        volumes = volumes * operations_length if len(volumes) == 1 else volumes
+        source_wells = source_wells * operations_length if len(source_wells) == 1 else source_wells
         destination_wells = (
-            destination_wells if isinstance(destination_wells, list) else [destination_wells]
-        )
-        destination_wells = (
-            destination_wells
-            if len(destination_wells) == operations_length
-            else destination_wells * operations_length
+            destination_wells * operations_length
+            if len(destination_wells) == 1
+            else destination_wells
         )
         # Parameter validation
         assert blow_out_to in ["source", "destination", "trash", "source_after_pipetting", ""], (
@@ -942,8 +1152,15 @@ class LiquidHandler:
         overhead_volume = self.p300_multi.min_volume if overhead_liquid else 0
         effective_max_single_volume = self.max_volume - overhead_volume - air_gap_volume
         new_operations = []
-        for operation in [[v, s, d] for v, s, d in zip(volumes, source_wells, destination_wells)]:
+        # The caller's operation index behind each split operation. Everything
+        # below indexes the split list; failures are reported against the
+        # caller's list, or a failed chunk of one well lands on another well.
+        caller_index = []
+        for op_index, operation in enumerate(
+            [[v, s, d] for v, s, d in zip(volumes, source_wells, destination_wells)]
+        ):
             volume = operation[0]
+            chunks_before = len(new_operations)
             while volume > effective_max_single_volume:
                 if volume > effective_max_single_volume + self.p300_multi.min_volume:
                     new_operations.append([effective_max_single_volume, operation[1], operation[2]])
@@ -955,8 +1172,20 @@ class LiquidHandler:
                     volume = 0
             if volume > 0:
                 new_operations.append([volume, operation[1], operation[2]])
+            caller_index += [op_index] * (len(new_operations) - chunks_before)
         volumes, source_wells, destination_wells = [list(lst) for lst in zip(*new_operations)] if new_operations else ([], [], [])
 
+        def to_caller_indices(failed):
+            """Re-key failures from split-list indices to the caller's, one per operation."""
+            out = []
+            for failure in sorted(failed, key=lambda x: x[3]):
+                index = failure[3]
+                if 0 <= index < len(caller_index):
+                    index = caller_index[index]
+                if index >= 0 and index in [o[3] for o in out]:
+                    continue
+                out.append([*failure[:3], index, *failure[4:]])
+            return out
 
         # Split the liquid handling operations so that the source wells are within one labware, and destination wells too
         source_labware = {well.parent for well in source_wells}
@@ -970,7 +1199,9 @@ class LiquidHandler:
             "trash_tips": trash_tips,
             "add_air_gap": add_air_gap,
             "overhead_liquid": overhead_liquid,
+            "mix_after": mix_after,
             "retention_time": retention_time,
+            "tip_reuse_limit": tip_reuse_limit,
             **kwargs,
         }
         failed_operations = []
@@ -981,12 +1212,16 @@ class LiquidHandler:
                 if transfer_params["new_tip"] == "once" and done:
                     transfer_params["new_tip"] = "never"
                 indexes = [i for i, well in enumerate(source_wells) if well.parent == labware]
-                failed_operations += self.transfer(
+                for failure in self.transfer(
                     [volumes[i] for i in indexes],
                     [source_wells[i] for i in indexes],
                     [destination_wells[i] for i in indexes],
                     **transfer_params,
-                )
+                ):
+                    # The sub-call reports against its own slice of the list.
+                    if 0 <= failure[3] < len(indexes):
+                        failure[3] = indexes[failure[3]]
+                    failed_operations.append(failure)
                 done = True
         elif len(destination_labware) > 1:
             for labware in destination_labware:
@@ -998,15 +1233,19 @@ class LiquidHandler:
                     for i, well in enumerate(destination_wells)
                     if well.parent == labware or well == labware
                 ]
-                failed_operations += self.transfer(
+                for failure in self.transfer(
                     [volumes[i] for i in indexes],
                     [source_wells[i] for i in indexes],
                     [destination_wells[i] for i in indexes],
                     **transfer_params,
-                )
+                ):
+                    # The sub-call reports against its own slice of the list.
+                    if 0 <= failure[3] < len(indexes):
+                        failure[3] = indexes[failure[3]]
+                    failed_operations.append(failure)
                 done = True
         if done:
-            return failed_operations
+            return to_caller_indices(failed_operations)
 
         def add_failed_pipette_operations(
             pipette_name: str, orig_idx: int, failed_operations: list, failure_reason: str
@@ -1119,7 +1358,9 @@ class LiquidHandler:
                                 )
                                 allocated_indexes.extend(idxs)
                                 continue
-                            # No multi-dispense if tip change is set as "always", no-multi aspiration if if tip change set as "always" or "on aspiration"
+                            # No multi-dispense if tip change is set as "always", no-multi aspiration if if tip change set as "always" or "on aspiration".
+                            # No multi-aspiration either when the leftover goes back to the source: a tip
+                            # holding several sources' liquid can only blow it back into one of them.
                             air_gap_vol = pipette.min_volume if add_air_gap else 0
                             overhead_vol = pipette.min_volume if overhead_liquid else 0
                             effective_max_vol = max_vol - overhead_vol - air_gap_vol
@@ -1128,7 +1369,11 @@ class LiquidHandler:
                                 and new_tip != "always"
                                 and (
                                     (p_idx == 1 and mix_after is False)
-                                    or (p_idx == 2 and new_tip != "on aspiration")
+                                    or (
+                                        p_idx == 2
+                                        and new_tip != "on aspiration"
+                                        and blow_out_to not in ("source", "source_after_pipetting")
+                                    )
                                 )
                             ):
                                 current_set.append([source, destination, volume, idx])
@@ -1170,7 +1415,7 @@ class LiquidHandler:
                         for _ in range(sets):
                             orphan_operations.append([source, destination, sub_volume, idx])
 
-                    elif volume > pipette.min_volume:
+                    elif volume >= pipette.min_volume:
                         orphan_operations.append([source, destination, volume, idx])
                     else:
                         logging.warning(
@@ -1189,21 +1434,17 @@ class LiquidHandler:
 
             # Single aspirate, multi-dispense
             # Sort the dispense operations based on the destination well name
+            def well_order(well):
+                """Column-major order (A1, B1, ... A2); the trash sorts first."""
+                name = getattr(well, "well_name", "A0")
+                return (
+                    int("".join(filter(str.isdigit, name))),
+                    "".join(filter(str.isalpha, name)),
+                )
+
             aspiration_sets = sorted(
-                [
-                    sorted(
-                        a_set,
-                        key=lambda x: (
-                            int("".join(filter(str.isdigit, x[1].well_name))),
-                            "".join(filter(str.isalpha, x[1].well_name)),
-                        ),
-                    )
-                    for a_set in aspiration_sets
-                ],
-                key=lambda x: (
-                    int("".join(filter(str.isdigit, x[0][1].well_name))),
-                    "".join(filter(str.isalpha, x[0][1].well_name)),
-                ),
+                [sorted(a_set, key=lambda x: well_order(x[1])) for a_set in aspiration_sets],
+                key=lambda x: well_order(x[0][1]),
             )
             for aspiration_set in aspiration_sets:
                 # Skip this set if pipette has run out of tips
@@ -1309,36 +1550,33 @@ class LiquidHandler:
                         # Mark that air gap has been added to this tip
                         tip_state[pipette_name]["has_air_gap"] = True
                     pipette.aspirate(
-                        volume=set_volume + extra_volume, location=source_well, **kwargs
+                        volume=set_volume + extra_volume,
+                        location=self._pipetting_location(source_well, pipette),
+                        **kwargs,
                     )
                     # Mark that overhead liquid has been added to this tip if extra_volume > 0
                     if extra_volume > 0:
                         tip_state[pipette_name]["has_overhead"] = True
                     time.sleep(retention_time)
                     if touch_tip:
-                        pipette.touch_tip(v_offset=-1)
+                        self._touch_tip(pipette, source_well)
 
                     # Perform dispenses
                     for last_index, (source, destination_well, volume, orig_idx) in enumerate(
                         aspiration_set
                     ):
-                        pipette.dispense(volume=volume, location=destination_well, **kwargs)
+                        pipette.dispense(
+                            volume=volume,
+                            location=self._pipetting_location(destination_well, pipette),
+                            **kwargs,
+                        )
                         time.sleep(retention_time)
                         if touch_tip:
-                            pipette.touch_tip(v_offset=-1)
+                            self._touch_tip(pipette, destination_well)
 
                         if mix_after:
                             if len(aspiration_set) == 1:
-                                if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
-                                    logging.warning(
-                                        f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
-                                    )
-                                else:
-                                    pipette.mix(
-                                        repetitions=mix_after[0],
-                                        volume=mix_after[1],
-                                        location=destination_well,
-                                    )
+                                self._mix_after(pipette, destination_well, mix_after, max_vol)
                             else:
                                 logging.warning(
                                     "Mixing ignored: mixing volume is not supported for multi-dispense operations"
@@ -1367,14 +1605,20 @@ class LiquidHandler:
                     if tip_reuse_limit is not None:
                         tip_usage_counts[pipette_name] += 1
 
-                except Exception as e:
+                except RECOVERABLE_ERRORS as e:
                     logging.error(f"Error during aspiration/dispense: {str(e)}")
+                    self._secure_tip(pipette)
+                    tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                     for source, destination, volume, orig_idx in aspiration_set[last_index:]:
                         idxs, failed_operations = add_failed_pipette_operations(
                             pipette_name, orig_idx, failed_operations, f"pipette_error: {str(e)}"
                         )
                         allocated_indexes.extend(idxs)
                     continue
+                except Exception:
+                    logging.exception("Unrecoverable error during aspiration/dispense; tip secured, stopping")
+                    self._secure_tip(pipette)
+                    raise
 
             # Multi-aspirate single dispense
             # Sort the dispense operations based on the source well name
@@ -1483,29 +1727,28 @@ class LiquidHandler:
                         tip_state[pipette_name]["has_air_gap"] = True
                     total_volume = 0
                     for source, _, volume, idx in dispense_set:
-                        pipette.aspirate(volume=volume, location=source, **kwargs)
+                        pipette.aspirate(
+                            volume=volume,
+                            location=self._pipetting_location(source, pipette),
+                            **kwargs,
+                        )
                         time.sleep(retention_time)
                         if touch_tip:
-                            pipette.touch_tip(v_offset=-1)
+                            self._touch_tip(pipette, source)
                         total_volume += volume
 
                     # Perform dispense
-                    pipette.dispense(volume=total_volume, location=destination_well, **kwargs)
+                    pipette.dispense(
+                        volume=total_volume,
+                        location=self._pipetting_location(destination_well, pipette),
+                        **kwargs,
+                    )
                     time.sleep(retention_time)
                     if touch_tip:
-                        pipette.touch_tip(v_offset=-1)
+                        self._touch_tip(pipette, destination_well)
 
                     if mix_after:
-                        if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
-                            logging.warning(
-                                f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
-                            )
-                        else:
-                            pipette.mix(
-                                repetitions=mix_after[0],
-                                volume=mix_after[1],
-                                location=destination_well,
-                            )
+                        self._mix_after(pipette, destination_well, mix_after, max_vol)
 
                     # Handle remaining volume
                     if pipette.current_volume:
@@ -1514,6 +1757,7 @@ class LiquidHandler:
                             # Reset tip state after blowout as air gap and overhead liquid are expelled
                             tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                         elif blow_out_to == "source":
+                            # Grouping is disabled for this blow_out_to, so the set holds one source.
                             pipette.blow_out(source.top())
                             # Reset tip state after blowout as air gap and overhead liquid are expelled
                             tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
@@ -1531,14 +1775,20 @@ class LiquidHandler:
                     if tip_reuse_limit is not None:
                         tip_usage_counts[pipette_name] += 1
 
-                except Exception as e:
+                except RECOVERABLE_ERRORS as e:
                     logging.error(f"Error during aspiration/dispense: {str(e)}", exc_info=True)
+                    self._secure_tip(pipette)
+                    tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                     for source, destination, volume, orig_idx in dispense_set:
                         idxs, failed_operations = add_failed_pipette_operations(
                             pipette_name, orig_idx, failed_operations, f"pipette_error: {str(e)}"
                         )
                         allocated_indexes.extend(idxs)
                     continue
+                except Exception:
+                    logging.exception("Unrecoverable error during aspiration/dispense; tip secured, stopping")
+                    self._secure_tip(pipette)
+                    raise
 
             # Simple aspirate and dispense
             # Sort the orphan operations based on the source well name
@@ -1637,31 +1887,30 @@ class LiquidHandler:
                         pipette.air_gap(volume=air_gap_volume)
                         # Mark that air gap has been added to this tip
                         tip_state[pipette_name]["has_air_gap"] = True
-                    pipette.aspirate(volume=volume + extra_volume, location=source, **kwargs)
+                    pipette.aspirate(
+                        volume=volume + extra_volume,
+                        location=self._pipetting_location(source, pipette),
+                        **kwargs,
+                    )
                     # Mark that overhead liquid has been added to this tip if extra_volume > 0
                     if extra_volume > 0:
                         tip_state[pipette_name]["has_overhead"] = True
                     time.sleep(retention_time)
                     if touch_tip:
-                        pipette.touch_tip(v_offset=-1)
+                        self._touch_tip(pipette, source)
 
                     # Perform dispense
-                    pipette.dispense(volume=volume, location=destination, **kwargs)
+                    pipette.dispense(
+                        volume=volume,
+                        location=self._pipetting_location(destination, pipette),
+                        **kwargs,
+                    )
                     time.sleep(retention_time)
                     if touch_tip:
-                        pipette.touch_tip(v_offset=-1)
+                        self._touch_tip(pipette, destination)
 
                     if mix_after:
-                        if mix_after[1] > max_vol or mix_after[1] < pipette.min_volume:
-                            logging.warning(
-                                f"Mixing ignored: mixing volume ({mix_after[1]} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
-                            )
-                        else:
-                            pipette.mix(
-                                repetitions=mix_after[0],
-                                volume=mix_after[1],
-                                location=destination,
-                            )
+                        self._mix_after(pipette, destination, mix_after, max_vol)
 
                     # Handle remaining volume
                     if pipette.current_volume:
@@ -1687,13 +1936,19 @@ class LiquidHandler:
                     if tip_reuse_limit is not None:
                         tip_usage_counts[pipette_name] += 1
 
-                except Exception as e:
+                except RECOVERABLE_ERRORS as e:
                     logging.error(f"Error during aspiration/dispense: {str(e)}")
+                    self._secure_tip(pipette)
+                    tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                     idxs, failed_operations = add_failed_pipette_operations(
                         pipette_name, orig_idx, failed_operations, f"pipette_error: {str(e)}"
                     )
                     allocated_indexes.extend(idxs)
                     continue
+                except Exception:
+                    logging.exception("Unrecoverable error during aspiration/dispense; tip secured, stopping")
+                    self._secure_tip(pipette)
+                    raise
 
             # Clean up tips for this pipette at the end of its operations
             if pipette_name not in out_of_tips_pipettes and pipette.has_tip:
@@ -1730,8 +1985,26 @@ class LiquidHandler:
             except Exception as e:
                 logging.error(f"Error resetting single tip mode: {str(e)}")
 
-        failed_operations.sort(key=lambda x: x[3])
-        return failed_operations
+        return to_caller_indices(failed_operations)
+
+    def _mix_after(self, pipette, well, mix_after, max_vol):
+        """The mix_after of one dispense, skipped with a warning where it cannot be done."""
+        repetitions, volume = mix_after
+        if volume > max_vol or volume < pipette.min_volume:
+            logging.warning(
+                f"Mixing ignored: mixing volume ({volume} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
+            )
+            return
+        if pipette is self.p300_multi and self._is_deep_tube(well):
+            logging.warning(
+                f"Mixing ignored: the p300 cannot reach the liquid in {well} (deep tube); mix with the p20 instead"
+            )
+            return
+        pipette.mix(
+            repetitions=repetitions,
+            volume=volume,
+            location=self._pipetting_location(well, pipette),
+        )
 
     def distribute(
         self,
@@ -1978,49 +2251,75 @@ class LiquidHandler:
         logging.debug(
             f"Mixing {len(wells)} wells with {repetitions} repetitions at {volume}µL each"
         )
+        wells = list(dict.fromkeys(wells))  # the caller's order, each well once
+        if not wells:
+            return
+        if new_tip not in ["always", "once", "never"]:
+            raise ValueError(f"Got an invalid value for the optional argument 'new_tip': {new_tip}")
 
-        fresh_tip = False
-        i = 0
-        while i < len(wells):
-            well = wells[i]
-            column_wells = well.parent.columns_by_name()[well.well_name[1:]]
-            all_wells_in_column = all(w in wells for w in column_wells)
-
-            if all_wells_in_column and volume > self.p20.max_volume:
-                pipette = self.p300_multi
-                self._set_single_tip_mode(False)
-            elif volume > self.p20.max_volume:
-                pipette = self.p300_multi
-                self._set_single_tip_mode(True)
+        # Assign each well a pipette mode. A column goes to the 8-channel only when
+        # all of its wells are listed - wherever they appear in the list - and none
+        # of them is out of the 8-channel's reach (front row, deep tube).
+        # [(mode, well, volume)]; a column is represented by its row-A well.
+        plan = []
+        taken = set()
+        p20_max = self.p20.max_volume
+        for well in wells:
+            if well in taken:
+                continue
+            column = well.parent.columns_by_name()[well.well_name[1:]]
+            whole_column = len(column) == 8 and all(w in wells for w in column)
+            reachable = not any(self._needs_p20(w, None) for w in column)
+            if volume > p20_max and whole_column and reachable:
+                plan.append(("multi", column[0], volume))
+                taken.update(column)
+                continue
+            taken.add(well)
+            if self._needs_p20(well, None) or volume <= p20_max:
+                if volume > p20_max:
+                    logging.warning(
+                        f"Mixing {well} with {p20_max} ul instead of {volume} ul: only the p20 can reach it"
+                    )
+                plan.append(("p20", well, min(volume, p20_max)))
             else:
-                pipette = self.p20
+                plan.append(("single", well, volume))
 
-            if not pipette.has_tip:
-                pipette.pick_up_tip()
-            elif not fresh_tip and new_tip == "always" or (i == 0 and new_tip == "once"):
-                if pipette.has_tip:
-                    if trash_tip:
-                        pipette.drop_tip()
-                    else:
-                        pipette.return_tip()
-                pipette.pick_up_tip()
+        def park(pipette):
+            if pipette.has_tip:
+                if trash_tip:
+                    pipette.drop_tip()
+                else:
+                    pipette.return_tip()
 
-            pipette.mix(repetitions=repetitions, volume=volume, location=well)
-            fresh_tip = False
+        # One mode at a time, so the nozzle layout changes at most twice and no
+        # pipette is left holding a used tip while the other one works.
+        previous = None
+        for mode in ("multi", "single", "p20"):
+            steps = [step for step in plan if step[0] == mode]
+            if not steps:
+                continue
+            pipette = self.p20 if mode == "p20" else self.p300_multi
+            if previous is not None and previous is not pipette:
+                park(previous)
+            if mode != "p20":
+                self._set_single_tip_mode(mode == "single")
+            if new_tip == "once":
+                park(pipette)
+            for _, well, mix_volume in steps:
+                if new_tip == "always":
+                    park(pipette)
+                if not pipette.has_tip:
+                    pipette.pick_up_tip()
+                pipette.mix(
+                    repetitions=repetitions,
+                    volume=mix_volume,
+                    location=self._pipetting_location(well, pipette),
+                )
+            if new_tip in ["once", "always"]:
+                park(pipette)
+            previous = pipette
 
-            if all_wells_in_column:
-                i += len(column_wells)  # Skip the remaining wells in the column
-            else:
-                i += 1
-
-        if new_tip in ["once", "always"] and pipette.has_tip:
-            if trash_tip:
-                pipette.drop_tip()
-            else:
-                pipette.return_tip()
-
-        if pipette == self.p300_multi:
-            self._set_single_tip_mode(False)
+        self._set_single_tip_mode(False)
 
     def engage_magnets(self, height=5.4, **kwargs):
         """

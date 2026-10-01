@@ -3,7 +3,8 @@ import unittest
 import math
 import random
 from unittest.mock import MagicMock, patch, mock_open
-from ot_handler.liquid_handler import LiquidHandler
+from ot_handler.liquid_handler import LiquidHandler  # before opentrons: numpy.trapz alias
+from opentrons.protocol_engine.errors import ProtocolCommandFailedError
 
 
 class TestLiquidHandlerDistribute(unittest.TestCase):
@@ -2399,7 +2400,7 @@ class TestFailedOperationsReporting(unittest.TestCase):
             "nest_96_wellplate_100ul_pcr_full_skirt", 3, "destination plate"
         )
 
-        volumes = [0.5, 25, 0.8, 30]  # 0.5 and 0.8 are below minimum
+        volumes = [0.3, 25, 0.4, 30]  # 0.3 and 0.4 are below the p20's 0.5 ul minimum
         source_wells = source_plate.wells()[:4]
         dest_wells = dest_plate.wells()[:4]
 
@@ -2413,7 +2414,7 @@ class TestFailedOperationsReporting(unittest.TestCase):
         self.assertEqual(len(failed_ops), 4)
 
         # First operation: volume too low
-        self.assertEqual(failed_ops[0][2], 0.5)
+        self.assertEqual(failed_ops[0][2], 0.3)
         self.assertEqual(failed_ops[0][3], 0)
         self.assertEqual(failed_ops[0][4], "volume_too_low")
 
@@ -2423,7 +2424,7 @@ class TestFailedOperationsReporting(unittest.TestCase):
         self.assertEqual(failed_ops[1][4], "out_of_tips")
 
         # Third operation: volume too low
-        self.assertEqual(failed_ops[2][2], 0.8)
+        self.assertEqual(failed_ops[2][2], 0.4)
         self.assertEqual(failed_ops[2][3], 2)
         self.assertEqual(failed_ops[2][4], "volume_too_low")
 
@@ -2433,9 +2434,10 @@ class TestFailedOperationsReporting(unittest.TestCase):
         self.assertEqual(failed_ops[3][4], "out_of_tips")
 
     def test_pipette_error_reporting(self):
-        # Mock a pipette error during operation
+        # A failed protocol command is reported and the run carries on
+        # (anything else is re-raised, see test_tier_fixes).
         def raise_error(*args, **kwargs):
-            raise Exception("Pipette malfunction")
+            raise ProtocolCommandFailedError(message="Pipette malfunction")
 
         self.lh.p300_multi.aspirate.side_effect = raise_error
         self.lh.p20.aspirate.side_effect = raise_error
@@ -2457,7 +2459,8 @@ class TestFailedOperationsReporting(unittest.TestCase):
             self.assertEqual(dest, dest_wells[i])
             self.assertEqual(volume, volumes[i])
             self.assertEqual(idx, i)
-            self.assertEqual(reason, "pipette_error: Pipette malfunction")
+            self.assertTrue(reason.startswith("pipette_error: "), reason)
+            self.assertIn("Pipette malfunction", reason)
 
     def test_failed_operations_in_distribute(self):
         # Test failed operations reporting in distribute method
