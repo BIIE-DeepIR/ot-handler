@@ -5,6 +5,25 @@ All notable changes to the OT Handler project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-01
+
+### Changed (behaviour)
+- **Logging is no longer configured on import.** The module used to call `logging.basicConfig(filename="ot_handler.log", level=DEBUG)` for the whole application; it now only emits on the `ot_handler` logger (one child per instance). Applications that relied on `ot_handler.log` appearing in the working directory must pass `log_file=` or configure logging themselves.
+- `retention_time`, `sleep()` and `shake(wait=True)` pause through `protocol_api.delay`: the simulator no longer waits in real time and the pauses appear in the run log.
+- `transfer()` validates `blow_out_to` with a `ValueError` instead of an `assert`.
+
+### Added
+- `log_file=` constructor argument: one log file per LiquidHandler (DEBUG and up), read back with `run_log_text()`, closed by `close()`.
+- `close()` and `with LiquidHandler(...) as lh:` end a run explicitly (shaker latch, log file); `__del__` only falls back to it.
+
+### Fixed
+- Sources were ordered as text (A10 before A2); wells are now in column-major order everywhere.
+- `remove_default_position()` crashed for integer slots and for slots missing from a section.
+- The search for `default_layout.ot2` under the working directory never matched.
+- `stamp()` raised `NameError` for a non-numeric volume; it raises `TypeError`.
+- A log message printed `{old}` literally.
+- `blow_out_to` was annotated as `bool`; the air-gap docstring said it was drawn after the liquid.
+
 ## [0.4.0] - 2026-10-01
 
 ### Changed (behaviour)

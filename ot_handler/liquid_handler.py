@@ -15,12 +15,14 @@ from opentrons.protocol_engine.errors import ProtocolCommandFailedError, Protoco
 from opentrons.protocols.api_support.types import APIVersion
 from threading import Timer
 import os
-import time
 import math
 import logging
 import json
 
-log_filepath = "ot_handler.log"
+#: Everything the handler logs goes through this logger (and, per instance,
+#: a child of it). The module configures no handlers: the application decides
+#: where the log goes. Pass ``log_file=`` to get one file per LiquidHandler.
+log = logging.getLogger("ot_handler")
 
 #: The highest Protocol API level an OT-2 runs (Flex-only levels start at 2.29).
 #: The default api_version is the lower of this and what the installed
@@ -53,13 +55,6 @@ SHAKER_DISPENSE_CLEARANCE_MM = OPENTRONS_DEFAULT_CLEARANCE_MM + 2.0
 #: (connection loss, hardware faults, bugs) is re-raised after the tip is secured.
 RECOVERABLE_ERRORS = (ProtocolEngineError, OutOfTipsError)
 
-logging.basicConfig(
-    filename=log_filepath,
-    filemode="w",  # use 'w' for overwrite mode, 'a' for append mode
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.DEBUG,
-)
-
 
 class LiquidHandler:
     def __init__(
@@ -71,6 +66,7 @@ class LiquidHandler:
         deck_layout=None,
         labware_folder=None,
         p20_min_volume: float = 0.5,
+        log_file=None,
     ):
         """
         Initialize a LiquidHandler instance.
@@ -88,10 +84,24 @@ class LiquidHandler:
             labware_folder (str): Path to a folder containing labware definitions. If provided, overrides the default labware folder.
             p20_min_volume (float): Smallest volume the p20 is allowed to pipette. Opentrons' own figure is
                 1 ul; 0.5 ul is below spec and must be calibrated for on each robot. None keeps Opentrons'.
+            log_file (str): Write everything this handler logs (DEBUG and up) to this file, truncating it,
+                until ``close()``. One handler per run gives one log per run; ``run_log_text()`` reads it back.
         """
+        self.log = log.getChild(f"{id(self):x}")
+        self._log_handler = None
+        self.log_file = str(log_file) if log_file else None
+        if self.log_file:
+            os.makedirs(os.path.dirname(os.path.abspath(self.log_file)), exist_ok=True)
+            self._log_handler = logging.FileHandler(self.log_file, mode="w", encoding="utf-8")
+            self._log_handler.setFormatter(
+                logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+            )
+            self.log.addHandler(self._log_handler)
+            self.log.setLevel(logging.DEBUG)
+            self.log.info("Log file for this LiquidHandler: %s", self.log_file)
         # Check for conflicting parameters
         if load_default and deck_layout is not None:
-            logging.warning(
+            self.log.warning(
                 "Both load_default=True and deck_layout provided. The deck_layout will override the default layout."
             )
 
@@ -100,7 +110,7 @@ class LiquidHandler:
         api_version = str(api_version)
 
         # initialize protocol API
-        logging.info(f"Initializing protocol API with version {api_version}")
+        self.log.info(f"Initializing protocol API with version {api_version}")
         if simulation:
             self.protocol_api = opentrons.simulate.get_protocol_api(api_version)
         else:
@@ -164,40 +174,77 @@ class LiquidHandler:
             self.load_default_labware()
 
         # load fixed hardware
-        logging.info("Loading instruments")
+        self.log.info("Loading instruments")
         self.trash = self.protocol_api.fixed_trash
 
         if len(self.p300_multi.tip_racks) == 0:
-            logging.warning(
+            self.log.warning(
                 "No tip racks confiugured for the pipette. Use lh.p300_multi.configure_nozzle_layout() to load the tips."
             )
 
         if len(self.p20.tip_racks) == 0:
-            logging.warning(
+            self.log.warning(
                 "No tip racks confiugured for the pipette. Use lh.p20.configure_nozzle_layout() to load the tips."
             )
 
-        logging.info("Closing labware latch")
+        self.log.info("Closing labware latch")
         self.close_shaker_latch()
 
         self.home()
 
-    def __del__(self):
+    def close(self):
+        """End the run: open the shaker latch and detach the run log file.
+
+        Deliberately does NOT home: the gantry is parked either way, and homing
+        cost the better part of a minute at the end of every run with the
+        operator waiting on it before they could clear the deck. Safe to call
+        twice; ``__del__`` calls it as a fallback.
+        """
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
         # getattr, not self.simulation_mode: a constructor that failed part way
-        # leaves the attribute unset, and the AttributeError raised here then
-        # lands on top of - and obscures - whatever actually went wrong.
+        # leaves the attribute unset, and an AttributeError here would land on
+        # top of - and obscure - whatever actually went wrong.
         if not getattr(self, "simulation_mode", True):
-            logging.info("Opening the labware latch as a part of the cleanup procedure.")
-            # Deliberately does NOT home: the gantry is parked either way, and
-            # it cost the better part of a minute at the end of every run with
-            # the operator waiting on it before they could clear the deck.
+            self.log.info("Opening the labware latch as a part of the cleanup procedure.")
             self.open_shaker_latch()
+        handler = getattr(self, "_log_handler", None)
+        if handler is not None:
+            self.log.info("Run log closed")
+            self.log.removeHandler(handler)
+            handler.close()
+            self._log_handler = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
+    def __del__(self):
+        if hasattr(self, "log"):
+            self.close()
+
+    def run_log_text(self) -> str:
+        """The contents of this handler's log file so far ("" without ``log_file=``)."""
+        if not self.log_file:
+            return ""
+        if self._log_handler is not None:
+            self._log_handler.flush()
+        with open(self.log_file, encoding="utf-8") as fh:
+            return fh.read()
+
+    def _wait(self, seconds: float):
+        """Pause the protocol; skipped by the simulator and visible in the run log."""
+        if seconds and seconds > 0:
+            self.protocol_api.delay(seconds=seconds)
 
     def _count_columns(self, plate_object, sample_count: int):
         """
         Count the number of columns to cover all samples. Used for multichannel pipetting.
         """
-        logging.debug(f"Counting columns for {plate_object} with {sample_count} samples")
+        self.log.debug(f"Counting columns for {plate_object} with {sample_count} samples")
         total_rows = len(plate_object.columns()[0])
         return math.ceil(sample_count / total_rows) * total_rows
 
@@ -221,21 +268,28 @@ class LiquidHandler:
             self.single_tip_mode = False
         return self.single_tip_mode
 
+    @staticmethod
+    def _default_layout_path():
+        """``default_layout.ot2`` next to this module, else the first one under the working directory."""
+        name = "default_layout.ot2"
+        default_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+        if os.path.isfile(default_file):
+            return default_file
+        for root, _dirs, files in os.walk(os.getcwd()):
+            if name in files:
+                return os.path.join(root, name)
+        return default_file
+
     def _save_labware_to_default(
         self, labware, model_string, deck_position, is_single_channel=False
     ):
         deck_position = str(deck_position)
         try:
-            default_file = os.path.join(os.path.dirname(__file__), "default_layout.ot2")
-            if not os.path.isfile(default_file):
-                for root, dirs, files in os.walk(os.getcwd()):
-                    if default_file in files:
-                        default_file = os.path.join(root, default_file)
-                        break
+            default_file = self._default_layout_path()
             with open(default_file) as f:
                 default_layout = json.load(f)
         except FileNotFoundError:
-            logging.warning(
+            self.log.warning(
                 f"The default layout file 'default_layout.ot2' does not exist. Creating an empty file at: {default_file}"
             )
             default_layout = {
@@ -265,8 +319,8 @@ class LiquidHandler:
             json.dump(default_layout, file, indent=4)
         msg = f"{model_string} is now loaded on position {deck_position} by default."
         if old != model_string:
-            msg += " This overrides the previous value of {old}."
-        logging.info(msg)
+            msg += f" This overrides the previous value of {old}."
+        self.log.info(msg)
 
     def _allocate_liquid_handling_steps(self, source_wells, destination_wells, volumes):
         """
@@ -574,7 +628,7 @@ class LiquidHandler:
             except Exception as e:  # LiquidHeightUnknownError, or an opentrons too old for it
                 if well not in self._unknown_level_warned:
                     self._unknown_level_warned.add(well)
-                    logging.warning(
+                    self.log.warning(
                         f"Liquid level of {well} unknown ({type(e).__name__}); pipetting at the "
                         "bottom. Call set_well_volume() first to keep the tip near the surface."
                     )
@@ -592,7 +646,7 @@ class LiquidHandler:
             liquid = self.protocol_api.define_liquid(name or f"{well.parent.load_name} {well.well_name}")
             well.load_liquid(liquid, volume_ul)
         except Exception as e:  # APIVersionError on old levels
-            logging.warning(f"Cannot record the liquid volume of {well}: {e}")
+            self.log.warning(f"Cannot record the liquid volume of {well}: {e}")
 
     def _touch_tip(self, pipette, well):
         """touch_tip, skipped with a warning where the labware forbids it.
@@ -601,7 +655,7 @@ class LiquidHandler:
         Protocol API 2.28 turned the skip-with-warning into an error; keep the old behaviour.
         """
         if isinstance(well, Well) and "touchTipDisabled" in well.parent.quirks:
-            logging.warning(f"Touch tip skipped: not allowed on {well.parent.load_name}")
+            self.log.warning(f"Touch tip skipped: not allowed on {well.parent.load_name}")
             return
         pipette.touch_tip(v_offset=-1)
 
@@ -617,7 +671,7 @@ class LiquidHandler:
                     pipette.blow_out(self.trash)
                 pipette.drop_tip()
         except Exception as e:  # noqa: BLE001 - best effort, the original error matters more
-            logging.error(f"Could not secure the tip of {pipette}: {e}")
+            self.log.error(f"Could not secure the tip of {pipette}: {e}")
 
     def set_shaker_dispense_clearance(self, clearance_mm=SHAKER_DISPENSE_CLEARANCE_MM):
         """Backwards-compatible alias for ``set_shaker_clearance``."""
@@ -630,9 +684,9 @@ class LiquidHandler:
         like any other plate. Returns the value in force.
         """
         self._shaker_dispense_clearance_mm = clearance_mm
-        logging.info("Shaker dispense clearance set to %s mm", clearance_mm)
+        self.log.info("Shaker dispense clearance set to %s mm", clearance_mm)
         if clearance_mm and self._labware_on_shaker() is None:
-            logging.warning(
+            self.log.warning(
                 "Shaker dispense clearance set to %s mm but no labware is on the "
                 "heater-shaker - the clearance will not apply to anything",
                 clearance_mm,
@@ -677,7 +731,7 @@ class LiquidHandler:
         to prevent contamination or errors in subsequent operations.
         """
         self.drop_tips(True)
-        logging.debug("Homing...")
+        self.log.debug("Homing...")
         self.protocol_api.home()
 
     def toggle_light(self, state: bool = True):
@@ -688,28 +742,21 @@ class LiquidHandler:
             state (bool): If True, turn on the light; if False, turn off the light.
         TODO: Does not work
         """
-        logging.debug(f"Setting OT-2 light to {'on' if state else 'off'}")
+        self.log.debug(f"Setting OT-2 light to {'on' if state else 'off'}")
         self.protocol_api.set_rail_lights(state)
 
     def sleep(self, duration):
-        "Sleep if not in simulation mode"
-        if self.simulation_mode:
-            pass
-        else:
-            time.sleep(duration)
+        """Pause the protocol for ``duration`` seconds; the simulator does not wait."""
+        self._wait(duration)
 
     def remove_default_position(self, deck_position):
-        default_file = os.path.join(os.path.dirname(__file__), "default_layout.ot2")
-        if not os.path.isfile(default_file):
-            for root, dirs, files in os.walk(os.getcwd()):
-                if default_file in files:
-                    default_file = os.path.join(root, default_file)
-                    break
+        deck_position = str(deck_position)
+        default_file = self._default_layout_path()
         with open(default_file) as f:
             default_layout = json.load(f)
 
-        for key, _ in default_layout.items():
-            del default_layout[key][deck_position]
+        for section in default_layout.values():
+            section.pop(deck_position, None)
 
         with open(default_file, "w") as file:
             json.dump(default_layout, file, indent=4)
@@ -748,14 +795,9 @@ class LiquidHandler:
         Load the default labware configuration from the default_layout.ot2 file.
         This method reads a JSON dictionary and loads each labware onto the deck.
         """
-        logging.info("Loading default labware from default_layout.ot2...")
+        self.log.info("Loading default labware from default_layout.ot2...")
         try:
-            default_file = os.path.join(os.path.dirname(__file__), "default_layout.ot2")
-            if not os.path.isfile(default_file):
-                for root, dirs, files in os.walk(os.getcwd()):
-                    if default_file in files:
-                        default_file = os.path.join(root, default_file)
-                        break
+            default_file = self._default_layout_path()
             with open(default_file) as f:
                 default_layout = json.load(f)
 
@@ -772,7 +814,7 @@ class LiquidHandler:
                 self.load_labware(model_string, deck_position)
 
         except FileNotFoundError:
-            logging.error("No default layout file found. No default labware loaded")
+            self.log.error("No default layout file found. No default labware loaded")
 
     def load_labware(
         self, model_string: str, deck_position: int, name: str = "", add_to_default=False
@@ -793,7 +835,7 @@ class LiquidHandler:
         Example:
         >>> lh.load_labware("opentrons_10_tuberack_falcon_4x50ml_6x15ml_conical", 8, "Falcon tube rack")
         """
-        logging.debug(f"Loading labware: {model_string} on position {deck_position}...")
+        self.log.debug(f"Loading labware: {model_string} on position {deck_position}...")
 
         if not name:
             name = model_string
@@ -812,7 +854,7 @@ class LiquidHandler:
                 )
 
         if on_module:
-            logging.debug("Loading labware on the module")
+            self.log.debug("Loading labware on the module")
             try:
                 labware = self.protocol_api.deck[deck_position].load_labware(model_string)
             except Exception:
@@ -823,7 +865,7 @@ class LiquidHandler:
                     labware_def, None
                 )
         else:
-            logging.debug("Loading labware on an empty slot")
+            self.log.debug("Loading labware on an empty slot")
             try:
                 labware = self.protocol_api.load_labware(model_string, deck_position, label=name)
             except ProtocolCommandFailedError:
@@ -837,7 +879,7 @@ class LiquidHandler:
             msg = f"Loaded labware {model_string} at position {self.protocol_api.deck[deck_position]} with name '{name}'"
         else:
             msg = f"Loaded labware {model_string} at position {deck_position} with name '{name}'"
-        logging.info(msg)
+        self.log.info(msg)
 
         if add_to_default and not labware.is_tiprack:
             self._save_labware_to_default(labware, model_string, deck_position)
@@ -887,7 +929,7 @@ class LiquidHandler:
                     if str(deck_position) not in ("1", "2", "3"):
                         self.single_p300_tips.append(labware)
                     else:
-                        logging.info(
+                        self.log.info(
                             f"Tip rack in slot {deck_position} serves the 8-channel only; "
                             "single-tip pickups at row H would reach past the deck front."
                         )
@@ -895,7 +937,7 @@ class LiquidHandler:
                     self.p20_tips.append(labware)
                     raise NotImplementedError("Multichannel p20 pipette is not yet supported.")
             if "200ul" in model_string and self.max_volume > 200:
-                logging.info(
+                self.log.info(
                     f"Limiting the maximum transfer volume from {self.max_volume} to 200ul due to tip size limit."
                 )
                 self.max_volume = 200
@@ -905,7 +947,7 @@ class LiquidHandler:
                 )
 
         else:
-            logging.error(
+            self.log.error(
                 "A model string was passed to load_tips, which doesn't correspond to a tip rack. Labware is unloaded."
             )
             self.unload_labware(labware)
@@ -1097,7 +1139,7 @@ class LiquidHandler:
         - touch_tip (bool, optional): Whether to touch the tip to the side of the well after aspirating or dispensing.
         - blow_out_to (str, optional): Whether the remainder of liquid is blown out to "source", "destination", "trash", or "source_after_pipetting". Empty string will result in no blow-out, which can be used e.g. for reverse pipetting. The "source_after_pipetting" option keeps overhead liquid and air gap through operations and blows out to source when the tip is about to be changed or dropped, and also at the end of all transfers.
         - trash_tips (bool, optional): Whether to discard tips after use.
-        - add_air_gap (bool, optional): Whether to add an air gap after aspiration. When enabled, the air gap volume equals the minimum pipette volume and reduces the effective maximum volume.
+        - add_air_gap (bool, optional): Whether to draw an air gap before aspirating, so it sits above the liquid in the tip. When enabled, the air gap volume equals the minimum pipette volume and reduces the effective maximum volume.
         - overhead_liquid (bool, optional): Whether to aspirate extra liquid to ensure complete transfer.
         - mix_after (tuple, optional): First element is repetitions and second element is volume of mixing at the destination well after dispense. False when no mixing needed. Will block multi-dispense mode.
         - retention_time (float, optional): time to wait in seconds after every aspiration & dispense prior to moving on. Defaults to 0.0 s. Helps viscous liquids to populate the tip fully.
@@ -1114,7 +1156,7 @@ class LiquidHandler:
         - The method gracefully handles OutOfTipsError by continuing with operations that don't involve the pipette
           that ran out of tips, and returning the operations that failed due to lack of tips.
         """
-        logging.debug(f"Transfer called with new tip: {new_tip}")
+        self.log.debug(f"Transfer called with new tip: {new_tip}")
 
         # A scalar or a one-element list applies to every operation; any other
         # length must match. Silently running the shorter list, as this used
@@ -1143,9 +1185,11 @@ class LiquidHandler:
             else destination_wells
         )
         # Parameter validation
-        assert blow_out_to in ["source", "destination", "trash", "source_after_pipetting", ""], (
-            "The parameter blow_out_to must always be defined and one of source, destination, trash, source_after_pipetting or empty string. Blow out happens only if there's air gap or overhead liquid"
-        )
+        if blow_out_to not in ["source", "destination", "trash", "source_after_pipetting", ""]:
+            raise ValueError(
+                "blow_out_to must be one of source, destination, trash, source_after_pipetting or "
+                f"empty string, got {blow_out_to!r}"
+            )
 
         # Check for volumes exceeding effective pipette max volume (accounting for overhead liquid and air gap)
         air_gap_volume = self.p300_multi.min_volume if add_air_gap else 0
@@ -1350,7 +1394,7 @@ class LiquidHandler:
                             if idx in allocated_indexes or volume <= 0:
                                 continue
                             if volume < pipette.min_volume:
-                                logging.warning(
+                                self.log.warning(
                                     f"Volume too low, requested operation ignored: dispense {volume} ul to {destination} with pipette {pipette}"
                                 )
                                 idxs, failed_operations = add_failed_pipette_operations(
@@ -1418,7 +1462,7 @@ class LiquidHandler:
                     elif volume >= pipette.min_volume:
                         orphan_operations.append([source, destination, volume, idx])
                     else:
-                        logging.warning(
+                        self.log.warning(
                             f"Volume too low, requested operation ignored: dispense {volume} ul to {destination} with pipette {pipette}"
                         )
                         idxs, failed_operations = add_failed_pipette_operations(
@@ -1529,7 +1573,7 @@ class LiquidHandler:
                         pipette.min_volume if should_add_air_gap else 0
                     )
                 except OutOfTipsError:
-                    logging.error(
+                    self.log.error(
                         f"Out of tips for {pipette}. Marking all related operations as failed."
                     )
                     out_of_tips_pipettes.add(pipette_name)
@@ -1557,7 +1601,7 @@ class LiquidHandler:
                     # Mark that overhead liquid has been added to this tip if extra_volume > 0
                     if extra_volume > 0:
                         tip_state[pipette_name]["has_overhead"] = True
-                    time.sleep(retention_time)
+                    self._wait(retention_time)
                     if touch_tip:
                         self._touch_tip(pipette, source_well)
 
@@ -1570,7 +1614,7 @@ class LiquidHandler:
                             location=self._pipetting_location(destination_well, pipette),
                             **kwargs,
                         )
-                        time.sleep(retention_time)
+                        self._wait(retention_time)
                         if touch_tip:
                             self._touch_tip(pipette, destination_well)
 
@@ -1578,7 +1622,7 @@ class LiquidHandler:
                             if len(aspiration_set) == 1:
                                 self._mix_after(pipette, destination_well, mix_after, max_vol)
                             else:
-                                logging.warning(
+                                self.log.warning(
                                     "Mixing ignored: mixing volume is not supported for multi-dispense operations"
                                 )
 
@@ -1606,7 +1650,7 @@ class LiquidHandler:
                         tip_usage_counts[pipette_name] += 1
 
                 except RECOVERABLE_ERRORS as e:
-                    logging.error(f"Error during aspiration/dispense: {str(e)}")
+                    self.log.error(f"Error during aspiration/dispense: {str(e)}")
                     self._secure_tip(pipette)
                     tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                     for source, destination, volume, orig_idx in aspiration_set[last_index:]:
@@ -1616,15 +1660,15 @@ class LiquidHandler:
                         allocated_indexes.extend(idxs)
                     continue
                 except Exception:
-                    logging.exception("Unrecoverable error during aspiration/dispense; tip secured, stopping")
+                    self.log.exception("Unrecoverable error during aspiration/dispense; tip secured, stopping")
                     self._secure_tip(pipette)
                     raise
 
             # Multi-aspirate single dispense
             # Sort the dispense operations based on the source well name
             dispense_sets = sorted(
-                [sorted(d_set, key=lambda x: str(x[0])) for d_set in dispense_sets],
-                key=lambda x: str(x[0][0]),
+                [sorted(d_set, key=lambda x: well_order(x[0])) for d_set in dispense_sets],
+                key=lambda x: well_order(x[0][0]),
             )
             for dispense_set in dispense_sets:
                 # Skip this set if pipette has run out of tips
@@ -1706,7 +1750,7 @@ class LiquidHandler:
                         pipette.min_volume if should_add_air_gap else 0
                     )
                 except OutOfTipsError:
-                    logging.error(
+                    self.log.error(
                         f"Out of tips for {pipette}. Marking all related operations as failed."
                     )
                     out_of_tips_pipettes.add(pipette_name)
@@ -1732,7 +1776,7 @@ class LiquidHandler:
                             location=self._pipetting_location(source, pipette),
                             **kwargs,
                         )
-                        time.sleep(retention_time)
+                        self._wait(retention_time)
                         if touch_tip:
                             self._touch_tip(pipette, source)
                         total_volume += volume
@@ -1743,7 +1787,7 @@ class LiquidHandler:
                         location=self._pipetting_location(destination_well, pipette),
                         **kwargs,
                     )
-                    time.sleep(retention_time)
+                    self._wait(retention_time)
                     if touch_tip:
                         self._touch_tip(pipette, destination_well)
 
@@ -1776,7 +1820,7 @@ class LiquidHandler:
                         tip_usage_counts[pipette_name] += 1
 
                 except RECOVERABLE_ERRORS as e:
-                    logging.error(f"Error during aspiration/dispense: {str(e)}", exc_info=True)
+                    self.log.error(f"Error during aspiration/dispense: {str(e)}", exc_info=True)
                     self._secure_tip(pipette)
                     tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                     for source, destination, volume, orig_idx in dispense_set:
@@ -1786,13 +1830,13 @@ class LiquidHandler:
                         allocated_indexes.extend(idxs)
                     continue
                 except Exception:
-                    logging.exception("Unrecoverable error during aspiration/dispense; tip secured, stopping")
+                    self.log.exception("Unrecoverable error during aspiration/dispense; tip secured, stopping")
                     self._secure_tip(pipette)
                     raise
 
             # Simple aspirate and dispense
             # Sort the orphan operations based on the source well name
-            orphan_operations = sorted(orphan_operations, key=lambda x: str(x[0]))
+            orphan_operations = sorted(orphan_operations, key=lambda x: well_order(x[0]))
             for source, destination, volume, orig_idx in orphan_operations:
                 # Skip this operation if pipette has run out of tips
                 if pipette_name in out_of_tips_pipettes:
@@ -1870,7 +1914,7 @@ class LiquidHandler:
                         pipette.min_volume if should_add_air_gap else 0
                     )
                 except OutOfTipsError:
-                    logging.error(
+                    self.log.error(
                         f"Out of tips for {pipette}. Marking all related operations as failed."
                     )
                     out_of_tips_pipettes.add(pipette_name)
@@ -1895,7 +1939,7 @@ class LiquidHandler:
                     # Mark that overhead liquid has been added to this tip if extra_volume > 0
                     if extra_volume > 0:
                         tip_state[pipette_name]["has_overhead"] = True
-                    time.sleep(retention_time)
+                    self._wait(retention_time)
                     if touch_tip:
                         self._touch_tip(pipette, source)
 
@@ -1905,7 +1949,7 @@ class LiquidHandler:
                         location=self._pipetting_location(destination, pipette),
                         **kwargs,
                     )
-                    time.sleep(retention_time)
+                    self._wait(retention_time)
                     if touch_tip:
                         self._touch_tip(pipette, destination)
 
@@ -1937,7 +1981,7 @@ class LiquidHandler:
                         tip_usage_counts[pipette_name] += 1
 
                 except RECOVERABLE_ERRORS as e:
-                    logging.error(f"Error during aspiration/dispense: {str(e)}")
+                    self.log.error(f"Error during aspiration/dispense: {str(e)}")
                     self._secure_tip(pipette)
                     tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                     idxs, failed_operations = add_failed_pipette_operations(
@@ -1946,7 +1990,7 @@ class LiquidHandler:
                     allocated_indexes.extend(idxs)
                     continue
                 except Exception:
-                    logging.exception("Unrecoverable error during aspiration/dispense; tip secured, stopping")
+                    self.log.exception("Unrecoverable error during aspiration/dispense; tip secured, stopping")
                     self._secure_tip(pipette)
                     raise
 
@@ -1974,7 +2018,7 @@ class LiquidHandler:
                         # Reset tip state when tip is dropped/returned
                         tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
                 except Exception as e:
-                    logging.error(f"Error dropping/returning tip: {str(e)}")
+                    self.log.error(f"Error dropping/returning tip: {str(e)}")
                     # Reset tip state even if drop/return fails
                     tip_state[pipette_name] = {"has_overhead": False, "has_air_gap": False}
 
@@ -1983,7 +2027,7 @@ class LiquidHandler:
                 if single_tip_mode:
                     self._set_single_tip_mode(False)
             except Exception as e:
-                logging.error(f"Error resetting single tip mode: {str(e)}")
+                self.log.error(f"Error resetting single tip mode: {str(e)}")
 
         return to_caller_indices(failed_operations)
 
@@ -1991,12 +2035,12 @@ class LiquidHandler:
         """The mix_after of one dispense, skipped with a warning where it cannot be done."""
         repetitions, volume = mix_after
         if volume > max_vol or volume < pipette.min_volume:
-            logging.warning(
+            self.log.warning(
                 f"Mixing ignored: mixing volume ({volume} ul) exceeds the pipette / tip volume range ({pipette.min_volume} ul - {max_vol} ul)"
             )
             return
         if pipette is self.p300_multi and self._is_deep_tube(well):
-            logging.warning(
+            self.log.warning(
                 f"Mixing ignored: the p300 cannot reach the liquid in {well} (deep tube); mix with the p20 instead"
             )
             return
@@ -2013,7 +2057,7 @@ class LiquidHandler:
         destination_wells,
         new_tip: str = "once",
         touch_tip: bool = False,
-        blow_out_to: bool = "trash",
+        blow_out_to: str = "trash",
         trash_tips: bool = True,
         add_air_gap: bool = True,
         overhead_liquid: bool = True,
@@ -2080,7 +2124,7 @@ class LiquidHandler:
 
         if blow_out_to == "" and new_tip in ["on aspiration", "always"]:
             msg = "blow_out_to should be set when new_tip is 'on aspiration' or 'always'. Setting to 'trash'."
-            logging.warning(msg)
+            self.log.warning(msg)
             blow_out_to = "trash"
 
         if isinstance(volumes, float) or isinstance(volumes, int):
@@ -2150,7 +2194,7 @@ class LiquidHandler:
             volumes = [volumes] * (len(source_wells) if isinstance(source_wells, list) else 1)
 
         if "overhead_liquid" in kwargs:
-            logging.warning("overhead_liquid is not supported for pool, ignoring")
+            self.log.warning("overhead_liquid is not supported for pool, ignoring")
             del kwargs["overhead_liquid"]
 
         source_wells = source_wells if isinstance(source_wells, list) else [source_wells]
@@ -2218,8 +2262,7 @@ class LiquidHandler:
             source_wells = source_wells[:sample_count]
             destination_wells = destination_wells[:sample_count]
 
-        if isinstance(volume, float) or isinstance(volume, int):
-            volumes = [volume] * len(destination_wells)
+        volumes = [float(volume)] * len(destination_wells)  # TypeError for anything but a number
 
         return self.transfer(
             volumes,
@@ -2248,7 +2291,7 @@ class LiquidHandler:
         TODO:
         - Could this be done with transfer, using the mix after, but zero aspiration for same source and destination?
         """
-        logging.debug(
+        self.log.debug(
             f"Mixing {len(wells)} wells with {repetitions} repetitions at {volume}µL each"
         )
         wells = list(dict.fromkeys(wells))  # the caller's order, each well once
@@ -2277,7 +2320,7 @@ class LiquidHandler:
             taken.add(well)
             if self._needs_p20(well, None) or volume <= p20_max:
                 if volume > p20_max:
-                    logging.warning(
+                    self.log.warning(
                         f"Mixing {well} with {p20_max} ul instead of {volume} ul: only the p20 can reach it"
                     )
                 plan.append(("p20", well, min(volume, p20_max)))

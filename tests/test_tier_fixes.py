@@ -303,3 +303,30 @@ class TestModules(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRunLog(unittest.TestCase):
+    def test_one_file_per_handler_with_everything_it_logged(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = f"{tmp}/run.log"
+            with handler(log_file=path) as lh:
+                a, d = lh.load_labware(PLATE, 4), lh.load_labware(PLATE, 5)
+                lh.transfer([50], [a["A1"]], [d["A1"]])
+                text = lh.run_log_text()
+            self.assertIn("Loaded labware", text)
+            self.assertIn("Transfer called", text)
+            # Closed: no handler left on the logger, file complete.
+            self.assertEqual(lh._log_handler, None)
+            self.assertIn("Run log closed", open(path).read())
+            # Another handler's lines do not leak into this file.
+            other = handler()
+            other.log.info("not for the first file")
+            self.assertNotIn("not for the first file", open(path).read())
+
+    def test_import_configures_no_logging(self):
+        import logging
+
+        self.assertEqual(logging.getLogger("ot_handler").handlers, [])
+        self.assertEqual(handler().run_log_text(), "")
