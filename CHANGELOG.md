@@ -5,6 +5,11 @@ All notable changes to the OT Handler project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-01
+
+### Changed
+- **Opentrons**: Requires `opentrons>=10.0.0` (pydantic 2). Robots are unaffected: they run their own opentrons, not this package.
+
 ## [0.2.1] - 2026-09-30
 
 ### Changed

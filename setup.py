@@ -5,11 +5,11 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 # Requirements
-requirements = ["opentrons>=8.2.0"]
+requirements = ["opentrons>=10.0.0"]
 
 setuptools.setup(
     name="ot_handler",  
-    version="0.2.1",    
+    version="0.3.0",    
     author="Oskari Vinko",
     author_email="oskari.vinko@immune.engineering",
     description="A comprehensive solution for automating liquid handling tasks on the Opentrons OT-2.",
